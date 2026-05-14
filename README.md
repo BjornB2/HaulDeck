@@ -2,13 +2,15 @@
 
 HaulDeck is an offline-first cargo run organizer for Star Citizen hauling contracts. It helps you stack multiple contracts in one run without mixing cargo for different destinations.
 
-The app is intended as a personal in-game companion. This project is prepared for a private GitHub repository and self-hosting. It is not a public service and does not include a backend, login, or cloud sync.
+The app is intended as a personal in-game companion. It runs entirely in the browser as a static GitHub Pages app. There is no backend, login, or cloud sync.
+
+Live app: [https://bjornb2.github.io/HaulDeck/](https://bjornb2.github.io/HaulDeck/)
 
 > Unofficial fan tool. HaulDeck is not affiliated with Cloud Imperium Games, Roberts Space Industries, or Star Citizen.
 
 ## AI Disclosure
 
-HaulDeck was built with AI assistance. The code, UI iterations, route planner logic, and documentation were largely designed and implemented together with an AI coding assistant. The app remains a personal/private project and should be tested during real hauling runs before relying on it heavily.
+HaulDeck was built with AI assistance. The code, UI iterations, route planner logic, and documentation were largely designed and implemented together with an AI coding assistant. The app should still be tested during real hauling runs before relying on it heavily.
 
 ## What It Does
 
@@ -54,9 +56,13 @@ The route planner uses a practical heuristic. It tries to:
 
 This is not a distance-based or quantum-route optimizer. There is no real distance matrix yet. The current planner is meant to be a practical checklist that helps prevent forgotten cargo, mixed stacks, and premature delivery stops.
 
-## Private Hosting
+## Hosting
 
-HaulDeck is a static web app. You can host it on any private/static web host that serves HTML, CSS, JavaScript, JSON, and image assets.
+HaulDeck is deployed on GitHub Pages:
+
+[https://bjornb2.github.io/HaulDeck/](https://bjornb2.github.io/HaulDeck/)
+
+It is also a static web app, so you can host it on any static web host that serves HTML, CSS, JavaScript, JSON, and image assets.
 
 For local testing:
 
@@ -83,7 +89,6 @@ No npm install, build step, or server-side runtime is required.
 - Runs are stored locally in IndexedDB.
 - Nothing is sent to a server by the app.
 - Catalog data lives in `public/data/locations.json` and `public/data/commodities.json`.
-- Because this is intended for a private repo and self-hosting, no public deployment configuration is included.
 
 ## Project Structure
 
