@@ -911,7 +911,9 @@ function normalizeLocationCatalog(locations) {
 }
 
 function getLocationOptions(locations) {
-  return locations.map((location) => location.name).sort();
+  return locations
+    .map((location) => location.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
 function getLocationSystems(locations) {
