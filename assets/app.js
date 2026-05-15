@@ -678,6 +678,7 @@ function bindEvents() {
       setActiveLocation(element.dataset.location, false);
       state.screen = { name: "load", sessionId: getCurrentSession()?.id };
       render();
+      window.scrollTo({ top: 0, behavior: "instant" });
     });
     if (action === "auto-assign") element.addEventListener("click", () => saveSession(autoAssignZones(getCurrentSession())));
     if (action === "rename-zone") element.addEventListener("change", (event) => renameZone(element.dataset.zoneId, event.currentTarget.value));
