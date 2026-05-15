@@ -462,6 +462,48 @@ p {
   font-weight: 800;
 }
 
+.unload-zone-group {
+  display: grid;
+  gap: 0.75rem;
+  border-left: 4px solid #f0cc6b;
+}
+
+.unload-zone-group h3 {
+  font-size: 1.2rem;
+}
+
+.unload-line-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.unload-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.55rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.55rem;
+}
+
+.unload-line:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.unload-line-controls {
+  display: grid;
+  grid-template-columns: 34px 68px 34px;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.unload-line-controls input {
+  min-height: 34px;
+  padding: 0.35rem;
+  text-align: center;
+}
+
 .cargo-elevator-popup {
   position: sticky;
   top: 4.8rem;

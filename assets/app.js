@@ -447,6 +447,12 @@ function renderLoadMode(session) {
 function renderActionsMode(session) {
   const actionLocation = getActionLocation();
   const unloadRows = getUnloadRows(session);
+  const unloadGroups = Object.values(unloadRows.reduce((map, row) => {
+    const zoneId = row.item.assignedZoneId || "";
+    map[zoneId] ??= { zoneId, zone: zoneName(session, zoneId), rows: [] };
+    map[zoneId].rows.push(row);
+    return map;
+  }, {}));
   const loadRows = getLoadRows(session);
   const groups = Object.values(loadRows.reduce((map, row) => {
     const key = row.contract.id;
@@ -456,10 +462,10 @@ function renderActionsMode(session) {
   }, {}));
   return `
     <section class="mode-header"><div><p class="eyebrow">Location actions</p><h2>${escapeHtml(actionLocation || "Choose a stop")}</h2></div><button class="secondary" data-nav="dashboard" data-session-id="${session.id}">Done</button></section>
-    ${unloadRows.length ? `
+    ${unloadGroups.length ? `
       <section class="stack">
         <h3 class="section-title">Unload here first</h3>
-        ${unloadRows.map((row) => renderProgressCard(session, row.contract, row.item, "unload")).join("")}
+        ${unloadGroups.map((group) => renderUnloadZoneGroup(session, group)).join("")}
       </section>
     ` : actionLocation ? `<section class="empty-state compact-empty"><h2>No unload here</h2><p>Nothing loaded is due at this location.</p></section>` : ""}
     ${groups.length ? renderCargoElevatorHint() : ""}
@@ -477,6 +483,45 @@ function renderActionsMode(session) {
         ${rows.map((row) => renderProgressCard(session, row.contract, row.item, "load")).join("")}
       </section>
     `).join("") : `<section class="empty-state compact-empty"><h2>No load here</h2><p>${actionLocation ? "Nothing needs to be picked up at this location." : "Select a stop from the stop plan."}</p></section>`}
+  `;
+}
+
+function renderUnloadZoneGroup(session, group) {
+  const remainingScu = group.rows.reduce((total, row) => total + row.item.loadedScu - row.item.unloadedScu, 0);
+  return `
+    <article class="card unload-zone-group">
+      <div class="card-header">
+        <div>
+          <p class="eyebrow">Unload zone</p>
+          <h3>Unload ${escapeHtml(group.zone)}</h3>
+          <p class="muted">${escapeHtml(formatCommodityTotalsForUnload(group.rows))}</p>
+        </div>
+        <span class="pill">${remainingScu} SCU</span>
+      </div>
+      <div class="unload-line-list">
+        ${group.rows.map((row) => renderUnloadLine(row.contract, row.item)).join("")}
+      </div>
+      <button class="primary full-width" data-action="max-unload-zone" data-zone-id="${escapeAttribute(group.zoneId)}">
+        Mark zone unloaded
+      </button>
+    </article>
+  `;
+}
+
+function renderUnloadLine(contract, item) {
+  const remaining = item.loadedScu - item.unloadedScu;
+  return `
+    <div class="unload-line">
+      <div>
+        <strong>${escapeHtml(item.commodity)}</strong>
+        <p class="muted">${remaining} SCU${contract.contractName ? ` · ${escapeHtml(contract.contractName)}` : ""}</p>
+      </div>
+      <div class="unload-line-controls">
+        <button class="compact-button" data-action="step-unload" data-contract-id="${contract.id}" data-item-id="${item.id}" data-delta="-1">-</button>
+        <input type="number" min="0" max="${item.loadedScu}" value="${item.unloadedScu}" data-action="set-unload" data-contract-id="${contract.id}" data-item-id="${item.id}" aria-label="Unloaded SCU for ${escapeAttribute(item.commodity)}">
+        <button class="compact-button" data-action="step-unload" data-contract-id="${contract.id}" data-item-id="${item.id}" data-delta="1">+</button>
+      </div>
+    </div>
   `;
 }
 
@@ -502,7 +547,7 @@ function renderProgressCard(session, contract, item, mode) {
       <div class="card-header">
         <div>
           <p class="eyebrow">${isLoad ? `To ${escapeHtml(item.dropoffLocation)}` : `From ${escapeHtml(contract.pickupLocation)}`}</p>
-          <h3>${escapeHtml(isLoad ? item.commodity : `Unload zone ${zone}`)}</h3>
+          <h3>${escapeHtml(item.commodity)}</h3>
           ${isLoad ? "" : `<p class="muted">${escapeHtml(item.commodity)} · ${escapeHtml(item.loadedScu - item.unloadedScu)} SCU for ${escapeHtml(item.dropoffLocation)}</p>`}
           ${contract.contractName ? `<p class="muted">${escapeHtml(contract.contractName)}</p>` : ""}
         </div>
@@ -588,7 +633,8 @@ function bindEvents() {
     if (action === "remove-cargo-line") element.addEventListener("click", () => removeCargoLine(Number(element.dataset.itemIndex)));
     if (action?.startsWith("step-")) element.addEventListener("click", () => stepProgress(element.dataset.contractId, element.dataset.itemId, action.replace("step-", ""), Number(element.dataset.delta)));
     if (action?.startsWith("set-")) element.addEventListener("change", (event) => setProgress(element.dataset.contractId, element.dataset.itemId, action.replace("set-", ""), Number(event.currentTarget.value)));
-    if (action?.startsWith("max-")) element.addEventListener("click", () => maxProgress(element.dataset.contractId, element.dataset.itemId, action.replace("max-", "")));
+    if (action === "max-unload-zone") element.addEventListener("click", () => maxUnloadZone(element.dataset.zoneId));
+    if (action?.startsWith("max-") && action !== "max-unload-zone") element.addEventListener("click", () => maxProgress(element.dataset.contractId, element.dataset.itemId, action.replace("max-", "")));
     if (action === "current-location") element.addEventListener("change", (event) => {
       setStartLocation(element.dataset.sessionId, event.currentTarget.value);
     });
@@ -778,6 +824,23 @@ function maxProgress(contractId, itemId, mode) {
   const row = findCargoLine(contractId, itemId);
   if (!row) return;
   setProgress(contractId, itemId, mode, mode === "load" ? row.item.quantityScu : row.item.loadedScu);
+}
+
+async function maxUnloadZone(zoneId) {
+  const session = getCurrentSession();
+  const actionLocation = getActionLocation();
+  if (!session || !actionLocation) return;
+  const normalizedZoneId = zoneId || undefined;
+  const contracts = session.contracts.map((contract) => normalizeContract({
+    ...contract,
+    items: contract.items.map((item) => {
+      const itemZoneId = item.assignedZoneId || undefined;
+      if (item.dropoffLocation !== actionLocation || itemZoneId !== normalizedZoneId || item.loadedScu <= item.unloadedScu) return item;
+      return { ...item, unloadedScu: item.loadedScu };
+    }),
+    updatedAt: new Date().toISOString(),
+  }));
+  await saveSession({ ...session, contracts, updatedAt: new Date().toISOString() });
 }
 
 async function renameZone(zoneId, name) {
@@ -1033,6 +1096,18 @@ function getLoadRows(session) {
 function formatCommodityTotals(rows) {
   const totals = rows.reduce((map, row) => {
     const remaining = row.item.quantityScu - row.item.loadedScu;
+    map.set(row.item.commodity, (map.get(row.item.commodity) ?? 0) + remaining);
+    return map;
+  }, new Map());
+  return [...totals.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .map(([commodity, total]) => `${commodity}: ${total} SCU`)
+    .join(" · ");
+}
+
+function formatCommodityTotalsForUnload(rows) {
+  const totals = rows.reduce((map, row) => {
+    const remaining = row.item.loadedScu - row.item.unloadedScu;
     map.set(row.item.commodity, (map.get(row.item.commodity) ?? 0) + remaining);
     return map;
   }, new Map());
