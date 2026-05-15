@@ -245,6 +245,12 @@ p {
   font-weight: 850;
 }
 
+.contract-scu-pill {
+  min-width: 4.5rem;
+  justify-content: center;
+  white-space: nowrap;
+}
+
 .zone-pill {
   display: inline-flex;
   align-items: center;

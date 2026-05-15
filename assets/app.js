@@ -486,7 +486,7 @@ function renderActionsMode(session) {
             <p class="eyebrow">Load contract ${index + 1}</p>
             <h3>${escapeHtml(contract.contractName || `${contract.pickupLocation} pickup`)}</h3>
           </div>
-          <span class="pill">${getRemainingScu(rows)} SCU</span>
+          <span class="pill contract-scu-pill">${getRemainingScu(rows)} SCU</span>
           <p class="muted wide-row">${escapeHtml(contract.pickupLocation)} -> ${escapeHtml(unique(rows.map((row) => row.item.dropoffLocation)).join(", "))}</p>
           <p class="contract-commodity-summary wide-row">${escapeHtml(formatCommodityTotals(rows))}</p>
         </div>
