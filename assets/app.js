@@ -520,6 +520,7 @@ function renderUnloadLine(contract, item) {
         <button class="compact-button" data-action="step-unload" data-contract-id="${contract.id}" data-item-id="${item.id}" data-delta="-1">-</button>
         <input type="number" min="0" max="${item.loadedScu}" value="${item.unloadedScu}" data-action="set-unload" data-contract-id="${contract.id}" data-item-id="${item.id}" aria-label="Unloaded SCU for ${escapeAttribute(item.commodity)}">
         <button class="compact-button" data-action="step-unload" data-contract-id="${contract.id}" data-item-id="${item.id}" data-delta="1">+</button>
+        <button class="compact-button unload-all-button" data-action="max-unload" data-contract-id="${contract.id}" data-item-id="${item.id}">All</button>
       </div>
     </div>
   `;

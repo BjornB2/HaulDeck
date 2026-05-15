@@ -493,7 +493,7 @@ p {
 
 .unload-line-controls {
   display: grid;
-  grid-template-columns: 34px 68px 34px;
+  grid-template-columns: 34px 68px 34px 48px;
   gap: 0.3rem;
   align-items: center;
 }
@@ -502,6 +502,10 @@ p {
   min-height: 34px;
   padding: 0.35rem;
   text-align: center;
+}
+
+.unload-all-button {
+  min-width: 48px;
 }
 
 .cargo-elevator-popup {
