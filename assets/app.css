@@ -436,6 +436,16 @@ p {
   font-size: 0.86rem;
 }
 
+.action-contract-group {
+  border-left: 3px solid #7bd8c6;
+  padding-left: 0.65rem;
+}
+
+.contract-group-heading {
+  display: grid;
+  gap: 0.25rem;
+}
+
 .compact-empty {
   padding: 0.7rem 0;
 }

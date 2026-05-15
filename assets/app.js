@@ -399,18 +399,19 @@ function renderRouteChecklist(session) {
             <div class="stop-number">${stop.sequence}</div>
             <div>
               <button class="link-button destination-link" data-action="set-current-location" data-location="${escapeAttribute(stop.name)}">${escapeHtml(formatRouteLocation(stop.name, showSystems))}</button>
-              <p class="muted">${stop.isStart && !stop.workScu ? "Start location" : `${stop.statusLabel} · ${stop.lines} line${stop.lines === 1 ? "" : "s"} · ${stop.commodities.map(escapeHtml).join(", ")}`}</p>
+              <p class="muted">${stop.statusLabel} · ${stop.lines} line${stop.lines === 1 ? "" : "s"} · ${stop.commodities.map(escapeHtml).join(", ")}</p>
               ${stop.zones.length ? `<p class="muted">Zones: ${stop.zones.map(escapeHtml).join(", ")}</p>` : ""}
               ${stop.note ? `<p class="dependency-note">${escapeHtml(stop.note)}</p>` : ""}
             </div>
             <div class="destination-metrics">
-              <strong>${stop.isStart && !stop.workScu ? "Start" : `${stop.workScu} SCU`}</strong>
+              <strong>${stop.workScu} SCU</strong>
               ${stop.unloadScu ? `<span>${stop.unloadScu} unload</span>` : ""}
               ${stop.loadScu ? `<span>${stop.loadScu} load</span>` : ""}
               <span>On board after: ${stop.onboardAfterScu} SCU</span>
+              ${stop.zoneLimit ? `<span>Destinations aboard: ${stop.onboardDestinationsAfter}/${stop.zoneLimit}</span>` : ""}
               ${stop.capacityScu ? `<span class="${stop.overCapacity ? "capacity-danger" : "capacity-ok"}">Max ${stop.capacityScu}</span>` : ""}
             </div>
-            ${stop.isStart && !stop.workScu ? "" : `<button class="primary full-width destination-action" data-action="go-actions" data-location="${escapeAttribute(stop.name)}">I am here now</button>`}
+            <button class="primary full-width destination-action" data-action="go-actions" data-location="${escapeAttribute(stop.name)}">I am here now</button>
           </article>
         `).join("")}
       </div>
@@ -460,8 +461,11 @@ function renderActionsMode(session) {
       </section>
     ` : actionLocation ? `<section class="empty-state compact-empty"><h2>No unload here</h2><p>Nothing loaded is due at this location.</p></section>` : ""}
     ${Object.values(groups).length ? Object.values(groups).map(({ contract, rows }) => `
-      <section class="stack">
-        <h3 class="section-title">Load contract: ${escapeHtml(contract.contractName || contract.pickupLocation)}</h3>
+      <section class="stack action-contract-group">
+        <div class="contract-group-heading">
+          <h3 class="section-title">Load contract: ${escapeHtml(contract.contractName || contract.pickupLocation)}</h3>
+          <p class="muted">${escapeHtml(formatCommodityTotals(rows))}</p>
+        </div>
         ${rows.map((row) => renderProgressCard(session, row.contract, row.item, "load")).join("")}
       </section>
     `).join("") : `<section class="empty-state compact-empty"><h2>No load here</h2><p>${actionLocation ? "Nothing needs to be picked up at this location." : "Select a stop from the stop plan."}</p></section>`}
@@ -473,15 +477,17 @@ function renderProgressCard(session, contract, item, mode) {
   const value = isLoad ? item.loadedScu : item.unloadedScu;
   const max = isLoad ? item.quantityScu : item.loadedScu;
   const label = isLoad ? "Loaded SCU" : "Unloaded SCU";
+  const zone = zoneName(session, item.assignedZoneId);
   return `
     <article class="card contract ${contract.status}">
       <div class="card-header">
         <div>
           <p class="eyebrow">${isLoad ? `To ${escapeHtml(item.dropoffLocation)}` : `From ${escapeHtml(contract.pickupLocation)}`}</p>
-          <h3>${escapeHtml(item.commodity)}</h3>
+          <h3>${escapeHtml(isLoad ? item.commodity : `Unload zone ${zone}`)}</h3>
+          ${isLoad ? "" : `<p class="muted">${escapeHtml(item.commodity)} · ${escapeHtml(item.loadedScu - item.unloadedScu)} SCU for ${escapeHtml(item.dropoffLocation)}</p>`}
           ${contract.contractName ? `<p class="muted">${escapeHtml(contract.contractName)}</p>` : ""}
         </div>
-        <span class="pill">${escapeHtml(zoneName(session, item.assignedZoneId))}</span>
+        <span class="pill">${escapeHtml(zone)}</span>
       </div>
       <div class="progress-line">
         <span>${label.replace(" SCU", "")} ${value} / ${Math.max(max, isLoad ? 1 : 0)} SCU</span>
@@ -799,10 +805,10 @@ function autoAssignZones(session) {
 function getWarnings(session) {
   const warnings = [];
   const cargo = allCargo(session).filter(({ contract }) => contract.status !== "cancelled");
-  const destinations = new Set(cargo.map((row) => row.item.dropoffLocation));
   const unassigned = cargo.filter((row) => !row.item.assignedZoneId);
-  if (destinations.size > session.zones.length) warnings.push({ level: "warning", message: `${destinations.size} destinations need space, but only ${session.zones.length} zones exist.` });
   if (unassigned.length) warnings.push({ level: "warning", message: `${unassigned.length} cargo line${unassigned.length === 1 ? "" : "s"} have unassigned cargo.` });
+  const zoneLimitedStops = getRouteChecklist(session, { startLocation: session.startLocation, zoneName, getLocationSystem }).filter((stop) => stop.zoneLimited);
+  if (zoneLimitedStops.length) warnings.push({ level: "info", message: `Route adjusted for ${session.zones.length} cargo zones. Add one more cargo zone for further optimized routing for this trip.` });
   const commodityDestinations = new Map();
   cargo.forEach(({ item }) => {
     const set = commodityDestinations.get(item.commodity) ?? new Set();
@@ -837,7 +843,7 @@ async function loadCatalogs() {
       locations: normalizedLocations,
       locationOptions: getLocationOptions(normalizedLocations),
       locationSystems: getLocationSystems(normalizedLocations),
-      commodities: commodities.sort(),
+      commodities: commodities.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
     };
   } catch {
     return { locations: [], locationOptions: [], locationSystems: new Map(), commodities: [] };
@@ -942,7 +948,8 @@ function field(label, name, value, list = "", type = "text", min = "", placehold
 
 function selectField(label, name, value, options, placeholder = "Select", action = "", dataset = {}, className = "") {
   const valueString = String(value ?? "");
-  const normalizedOptions = [...new Set([...options, valueString].filter(Boolean))].sort();
+  const normalizedOptions = [...new Set([...options, valueString].filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   const dataAttributes = [
     action ? `data-action="${escapeAttribute(action)}"` : "",
     dataset.sessionId ? `data-session-id="${escapeAttribute(dataset.sessionId)}"` : "",
@@ -991,6 +998,18 @@ function getLoadRows(session) {
     item.loadedScu < item.quantityScu &&
     (!actionLocation || contract.pickupLocation === actionLocation),
   );
+}
+
+function formatCommodityTotals(rows) {
+  const totals = rows.reduce((map, row) => {
+    const remaining = row.item.quantityScu - row.item.loadedScu;
+    map.set(row.item.commodity, (map.get(row.item.commodity) ?? 0) + remaining);
+    return map;
+  }, new Map());
+  return [...totals.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .map(([commodity, total]) => `${commodity}: ${total} SCU`)
+    .join(" · ");
 }
 
 function getUnloadRows(session) {
