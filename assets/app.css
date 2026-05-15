@@ -436,14 +436,52 @@ p {
   font-size: 0.86rem;
 }
 
-.action-contract-group {
-  border-left: 3px solid #7bd8c6;
-  padding-left: 0.65rem;
-}
-
 .contract-group-heading {
   display: grid;
+  grid-template-columns: 1fr auto;
   gap: 0.25rem;
+  border: 1px solid rgba(123, 216, 198, 0.28);
+  border-left: 4px solid #7bd8c6;
+  border-radius: 8px;
+  padding: 0.72rem;
+  background: rgba(15, 143, 126, 0.14);
+}
+
+.contract-group-heading h3 {
+  font-size: 1.05rem;
+}
+
+.wide-row {
+  grid-column: 1 / -1;
+}
+
+.contract-commodity-summary {
+  grid-column: 1 / -1;
+  color: #edf2f4;
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
+.cargo-elevator-popup {
+  position: sticky;
+  top: 4.8rem;
+  z-index: 2;
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.8rem;
+  border: 1px solid rgba(123, 216, 198, 0.34);
+  border-radius: 8px;
+  padding: 0.75rem 3.1rem 0.75rem 0.8rem;
+  background: rgba(21, 33, 38, 0.97);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+  color: #c7d0d5;
+}
+
+.hint-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 34px;
 }
 
 .compact-empty {

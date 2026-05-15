@@ -4,6 +4,7 @@ const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
 const DATA_KEY = "data";
 const SCHEMA_VERSION = 2;
+const CARGO_HINT_KEY = "hauldeck.dismissedCargoElevatorHint";
 const DEFAULT_ZONES = ["Left Front", "Right Front", "Left Rear", "Right Rear"];
 
 const app = document.querySelector("#app");
@@ -14,6 +15,7 @@ let state = {
   screen: { name: "home" },
   showArchived: false,
   activeLocation: "",
+  dismissedCargoHint: readDismissedCargoHint(),
 };
 
 boot();
@@ -446,12 +448,12 @@ function renderActionsMode(session) {
   const actionLocation = getActionLocation();
   const unloadRows = getUnloadRows(session);
   const loadRows = getLoadRows(session);
-  const groups = loadRows.reduce((map, row) => {
+  const groups = Object.values(loadRows.reduce((map, row) => {
     const key = row.contract.id;
     map[key] ??= { contract: row.contract, rows: [] };
     map[key].rows.push(row);
     return map;
-  }, {});
+  }, {}));
   return `
     <section class="mode-header"><div><p class="eyebrow">Location actions</p><h2>${escapeHtml(actionLocation || "Choose a stop")}</h2></div><button class="secondary" data-nav="dashboard" data-session-id="${session.id}">Done</button></section>
     ${unloadRows.length ? `
@@ -460,21 +462,32 @@ function renderActionsMode(session) {
         ${unloadRows.map((row) => renderProgressCard(session, row.contract, row.item, "unload")).join("")}
       </section>
     ` : actionLocation ? `<section class="empty-state compact-empty"><h2>No unload here</h2><p>Nothing loaded is due at this location.</p></section>` : ""}
-    ${Object.values(groups).length ? `
-      <article class="notice info cargo-elevator-hint">
-        <span>Hint</span>
-        <p>Pull one contract at a time from the cargo elevator, or only combine contracts that share the same destination. Station inventory shows totals, so mixed destinations quickly become hard to separate.</p>
-      </article>
-    ` : ""}
-    ${Object.values(groups).length ? Object.values(groups).map(({ contract, rows }) => `
+    ${groups.length ? renderCargoElevatorHint() : ""}
+    ${groups.length ? groups.map(({ contract, rows }, index) => `
       <section class="stack action-contract-group">
         <div class="contract-group-heading">
-          <h3 class="section-title">Load contract: ${escapeHtml(contract.contractName || contract.pickupLocation)}</h3>
-          <p class="muted">${escapeHtml(formatCommodityTotals(rows))}</p>
+          <div>
+            <p class="eyebrow">Load contract ${index + 1}</p>
+            <h3>${escapeHtml(contract.contractName || `${contract.pickupLocation} pickup`)}</h3>
+          </div>
+          <span class="pill">${getRemainingScu(rows)} SCU</span>
+          <p class="muted wide-row">${escapeHtml(contract.pickupLocation)} -> ${escapeHtml(unique(rows.map((row) => row.item.dropoffLocation)).join(", "))}</p>
+          <p class="contract-commodity-summary wide-row">${escapeHtml(formatCommodityTotals(rows))}</p>
         </div>
         ${rows.map((row) => renderProgressCard(session, row.contract, row.item, "load")).join("")}
       </section>
     `).join("") : `<section class="empty-state compact-empty"><h2>No load here</h2><p>${actionLocation ? "Nothing needs to be picked up at this location." : "Select a stop from the stop plan."}</p></section>`}
+  `;
+}
+
+function renderCargoElevatorHint() {
+  if (state.dismissedCargoHint) return "";
+  return `
+    <aside class="cargo-elevator-popup" role="status">
+      <button class="ghost compact-button hint-close" data-action="dismiss-cargo-hint" aria-label="Dismiss cargo elevator hint">&times;</button>
+      <p class="eyebrow">Cargo elevator</p>
+      <p>Pull one contract at a time, or only combine contracts with the same destination. Station inventory shows totals, so mixed destinations become hard to separate.</p>
+    </aside>
   `;
 }
 
@@ -603,8 +616,19 @@ function bindEvents() {
     if (action === "auto-assign") element.addEventListener("click", () => saveSession(autoAssignZones(getCurrentSession())));
     if (action === "rename-zone") element.addEventListener("change", (event) => renameZone(element.dataset.zoneId, event.currentTarget.value));
     if (action === "assign-zone") element.addEventListener("change", (event) => assignZone(element.dataset.contractId, element.dataset.itemId, event.currentTarget.value));
+    if (action === "dismiss-cargo-hint") element.addEventListener("click", dismissCargoHint);
   });
 
+}
+
+function dismissCargoHint() {
+  state.dismissedCargoHint = true;
+  try {
+    localStorage.setItem(CARGO_HINT_KEY, "true");
+  } catch {
+    // Ignore private browsing/storage failures; the hint can reappear next load.
+  }
+  render();
 }
 
 async function createNewSession() {
@@ -1018,6 +1042,10 @@ function formatCommodityTotals(rows) {
     .join(" · ");
 }
 
+function getRemainingScu(rows) {
+  return rows.reduce((total, row) => total + row.item.quantityScu - row.item.loadedScu, 0);
+}
+
 function getUnloadRows(session) {
   const actionLocation = getActionLocation();
   return allCargo(session).filter(({ contract, item }) =>
@@ -1132,6 +1160,18 @@ function numberOrUndefined(value) {
 function clean(value) {
   const next = String(value ?? "").trim();
   return next || undefined;
+}
+
+function readDismissedCargoHint() {
+  try {
+    return localStorage.getItem(CARGO_HINT_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function escapeHtml(value) {
