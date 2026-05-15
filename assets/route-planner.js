@@ -23,8 +23,10 @@ export function getRouteChecklist(session, options = {}) {
   for (let guard = 0; guard < rows.length * 20 + 50 && current; guard += 1) {
     const onboardBeforeScu = getSimulatedOnboardScu(rows);
     const shouldDeferLoad = shouldDeferConstrainedPickup(current, rows, capacityScu, onboardBeforeScu);
-    const stop = shouldDeferLoad ? null : buildRouteStop(session, current, rows, onboardBeforeScu, zoneName, zoneLimit);
-    const changed = shouldDeferLoad ? false : applyRouteStop(current, rows, capacityScu, zoneLimit);
+    const shouldDeferUnload = !shouldDeferLoad && shouldDeferSplitDelivery(current, rows, capacityScu, onboardBeforeScu);
+    const shouldDeferStop = shouldDeferLoad || shouldDeferUnload;
+    const stop = shouldDeferStop ? null : buildRouteStop(session, current, rows, onboardBeforeScu, zoneName, zoneLimit);
+    const changed = shouldDeferStop ? false : applyRouteStop(current, rows, capacityScu, zoneLimit);
 
     if (stop && stop.workScu > 0) {
       stops.push(stop);
@@ -128,6 +130,22 @@ function shouldDeferConstrainedPickup(location, rows, capacityScu, onboardBefore
   const availableScu = Math.max(0, capacityScu - onboardBeforeScu);
   const desiredLoadScu = Math.min(loadScuHere, capacityScu);
   return hasUnloadElsewhere(rows, location) && desiredLoadScu > availableScu;
+}
+
+function shouldDeferSplitDelivery(location, rows, capacityScu, onboardBeforeScu) {
+  const unloadRowsHere = rows.filter((row) => row.item.dropoffLocation === location && row.item.loadedScu > row.item.unloadedScu);
+  if (!unloadRowsHere.length) return false;
+  const loadRowsHere = rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu);
+  if (loadRowsHere.length) return false;
+  const deferredRowsForSameDestination = rows.filter((row) =>
+    row.item.dropoffLocation === location &&
+    row.pickupLocation !== location &&
+    row.item.loadedScu < row.item.quantityScu
+  );
+  if (!deferredRowsForSameDestination.length) return false;
+  if (capacityScu <= 0) return true;
+  const availableScu = Math.max(0, capacityScu - onboardBeforeScu);
+  return getRemainingLoadScu(deferredRowsForSameDestination) <= availableScu;
 }
 
 function chooseNextRouteLocation(rows, current, visited, capacityScu = 0, zoneLimit = 0, getLocationSystem) {
