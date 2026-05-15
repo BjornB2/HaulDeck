@@ -6,6 +6,16 @@ const DATA_KEY = "data";
 const SCHEMA_VERSION = 2;
 const CARGO_HINT_KEY = "hauldeck.dismissedCargoElevatorHint";
 const DEFAULT_ZONES = ["Left Front", "Right Front", "Left Rear", "Right Rear"];
+const ZONE_PALETTE = [
+  "#15b8a6",
+  "#e7bf45",
+  "#4f9cff",
+  "#e56b8c",
+  "#a78bfa",
+  "#f97316",
+  "#74c365",
+  "#f472b6",
+];
 
 const app = document.querySelector("#app");
 
@@ -50,7 +60,7 @@ function createSession() {
     createdAt: now,
     updatedAt: now,
     contracts: [],
-    zones: DEFAULT_ZONES.map((name, index) => ({ id: createId("zone"), name, sortOrder: index })),
+    zones: createDefaultZones(),
   };
 }
 
@@ -103,7 +113,7 @@ function normalizeData(data) {
       ...session,
       shipCapacityScu: Math.max(0, Math.floor(Number(session.shipCapacityScu) || 0)),
       startLocation: String(session.startLocation ?? session.currentLocation ?? "").trim(),
-      zones: session.zones?.length ? session.zones : DEFAULT_ZONES.map((name, index) => ({ id: createId("zone"), name, sortOrder: index })),
+      zones: normalizeZones(session.zones),
       contracts: (session.contracts ?? []).map(normalizeContract),
     })),
   };
@@ -318,7 +328,7 @@ function renderContractCard(session, contract) {
           <div class="cargo-line-summary">
             <span><strong>${escapeHtml(item.commodity)}</strong><br>${escapeHtml(item.dropoffLocation)}</span>
             <span>${item.quantityScu} SCU<br><span class="muted">${item.loadedScu}/${item.quantityScu} loaded</span></span>
-            <span>${escapeHtml(zoneName(session, item.assignedZoneId))}</span>
+            <span>${renderZonePill(session, item.assignedZoneId, "mini")}</span>
           </div>
         `).join("")}
       </div>
@@ -488,12 +498,13 @@ function renderActionsMode(session) {
 
 function renderUnloadZoneGroup(session, group) {
   const remainingScu = group.rows.reduce((total, row) => total + row.item.loadedScu - row.item.unloadedScu, 0);
+  const zoneColor = zoneAccent(session, group.zoneId);
   return `
-    <article class="card unload-zone-group">
+    <article class="card unload-zone-group" style="--zone-color: ${escapeAttribute(zoneColor)};">
       <div class="card-header">
         <div>
           <p class="eyebrow">Unload zone</p>
-          <h3>Unload ${escapeHtml(group.zone)}</h3>
+          <h3><span class="zone-swatch" style="--zone-color: ${escapeAttribute(zoneColor)};"></span>Unload ${escapeHtml(group.zone)}</h3>
           <p class="muted">${escapeHtml(formatCommodityTotalsForUnload(group.rows))}</p>
         </div>
         <span class="pill">${remainingScu} SCU</span>
@@ -542,9 +553,9 @@ function renderProgressCard(session, contract, item, mode) {
   const value = isLoad ? item.loadedScu : item.unloadedScu;
   const max = isLoad ? item.quantityScu : item.loadedScu;
   const label = isLoad ? "Loaded SCU" : "Unloaded SCU";
-  const zone = zoneName(session, item.assignedZoneId);
+  const zoneColor = zoneAccent(session, item.assignedZoneId);
   return `
-    <article class="card contract ${contract.status}">
+    <article class="card contract ${contract.status} zone-accent-card" style="--zone-color: ${escapeAttribute(zoneColor)};">
       <div class="card-header">
         <div>
           <p class="eyebrow">${isLoad ? `To ${escapeHtml(item.dropoffLocation)}` : `From ${escapeHtml(contract.pickupLocation)}`}</p>
@@ -552,7 +563,7 @@ function renderProgressCard(session, contract, item, mode) {
           ${isLoad ? "" : `<p class="muted">${escapeHtml(item.commodity)} · ${escapeHtml(item.loadedScu - item.unloadedScu)} SCU for ${escapeHtml(item.dropoffLocation)}</p>`}
           ${contract.contractName ? `<p class="muted">${escapeHtml(contract.contractName)}</p>` : ""}
         </div>
-        <span class="pill">${escapeHtml(zone)}</span>
+        ${renderZonePill(session, item.assignedZoneId)}
       </div>
       <div class="progress-line">
         <span>${label.replace(" SCU", "")} ${value} / ${Math.max(max, isLoad ? 1 : 0)} SCU</span>
@@ -576,7 +587,14 @@ function renderZones(session) {
     <section class="mode-header"><div><p class="eyebrow">Zones</p><h2>Keep destination stacks separate.</h2></div><button class="secondary" data-nav="dashboard" data-session-id="${session.id}">Done</button></section>
     <section class="toolbar"><button class="primary" data-action="auto-assign" data-session-id="${session.id}">Auto assign</button></section>
     <section class="stack">
-      ${session.zones.map((zone) => `<article class="card form-card"><label>Zone name<input value="${escapeAttribute(zone.name)}" data-action="rename-zone" data-zone-id="${zone.id}"></label></article>`).join("")}
+      ${session.zones.map((zone) => `
+        <article class="card form-card zone-settings-card" style="--zone-color: ${escapeAttribute(zone.color)};">
+          <div class="zone-settings-row">
+            <span class="zone-swatch large" style="--zone-color: ${escapeAttribute(zone.color)};"></span>
+            <label>Zone name<input value="${escapeAttribute(zone.name)}" data-action="rename-zone" data-zone-id="${zone.id}"></label>
+          </div>
+        </article>
+      `).join("")}
     </section>
     <section class="stack">
       <h3 class="section-title">Cargo line assignments</h3>
@@ -585,7 +603,8 @@ function renderZones(session) {
           <div>
             <p class="eyebrow">${escapeHtml(item.dropoffLocation)}</p>
             <h3>${escapeHtml(item.commodity)}</h3>
-            <p class="muted">${escapeHtml(contract.pickupLocation)} · Current: ${escapeHtml(zoneName(session, item.assignedZoneId))}</p>
+            <p class="muted">${escapeHtml(contract.pickupLocation)}</p>
+            <div class="assignment-zone-current">Current ${renderZonePill(session, item.assignedZoneId, "mini")}</div>
           </div>
           <select data-action="assign-zone" data-contract-id="${contract.id}" data-item-id="${item.id}">
             <option value="">Unassigned</option>
@@ -1147,7 +1166,7 @@ function normalizeSession(session) {
   return {
     ...session,
     shipCapacityScu: Math.max(0, Math.floor(Number(session.shipCapacityScu) || 0)),
-    zones: session.zones?.length ? session.zones : DEFAULT_ZONES.map((name, index) => ({ id: createId("zone"), name, sortOrder: index })),
+    zones: normalizeZones(session.zones),
     contracts: (session.contracts ?? []).map(normalizeContract),
   };
 }
@@ -1216,6 +1235,34 @@ function emptyCargoDraft() {
 
 function zoneName(session, zoneId) {
   return session.zones.find((zone) => zone.id === zoneId)?.name ?? "Unassigned";
+}
+
+function zoneAccent(session, zoneId) {
+  return session.zones.find((zone) => zone.id === zoneId)?.color ?? "#8d9ca5";
+}
+
+function renderZonePill(session, zoneId, className = "") {
+  const color = zoneAccent(session, zoneId);
+  return `<span class="zone-pill ${className}" style="--zone-color: ${escapeAttribute(color)};"><span class="zone-swatch" style="--zone-color: ${escapeAttribute(color)};"></span>${escapeHtml(zoneName(session, zoneId))}</span>`;
+}
+
+function createDefaultZones() {
+  return DEFAULT_ZONES.map((name, index) => ({
+    id: createId("zone"),
+    name,
+    sortOrder: index,
+    color: ZONE_PALETTE[index % ZONE_PALETTE.length],
+  }));
+}
+
+function normalizeZones(zones) {
+  const source = zones?.length ? zones : createDefaultZones();
+  return source.map((zone, index) => ({
+    id: zone.id || createId("zone"),
+    name: String(zone.name ?? DEFAULT_ZONES[index] ?? `Zone ${index + 1}`).trim() || `Zone ${index + 1}`,
+    sortOrder: Number.isFinite(Number(zone.sortOrder)) ? Number(zone.sortOrder) : index,
+    color: zone.color || ZONE_PALETTE[index % ZONE_PALETTE.length],
+  }));
 }
 
 function createId(prefix) {

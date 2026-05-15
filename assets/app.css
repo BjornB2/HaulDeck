@@ -245,6 +245,39 @@ p {
   font-weight: 850;
 }
 
+.zone-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: max-content;
+  border: 1px solid var(--zone-color);
+  border-radius: 999px;
+  padding: 0.35rem 0.6rem;
+  color: #edf2f4;
+  background: #10161b;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.zone-pill.mini {
+  padding: 0.22rem 0.42rem;
+  font-size: 0.76rem;
+}
+
+.zone-swatch {
+  display: inline-block;
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 999px;
+  background: var(--zone-color);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+}
+
+.zone-swatch.large {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
 .meta-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -465,11 +498,38 @@ p {
 .unload-zone-group {
   display: grid;
   gap: 0.75rem;
-  border-left: 4px solid #f0cc6b;
+  border-left: 4px solid var(--zone-color);
 }
 
 .unload-zone-group h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
   font-size: 1.2rem;
+}
+
+.zone-accent-card {
+  border-left: 4px solid var(--zone-color);
+}
+
+.zone-settings-card {
+  border-left: 4px solid var(--zone-color);
+}
+
+.zone-settings-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.assignment-zone-current {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.3rem;
+  color: #aab7bf;
+  font-size: 0.82rem;
 }
 
 .unload-line-list {
