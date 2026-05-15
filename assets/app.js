@@ -460,6 +460,12 @@ function renderActionsMode(session) {
         ${unloadRows.map((row) => renderProgressCard(session, row.contract, row.item, "unload")).join("")}
       </section>
     ` : actionLocation ? `<section class="empty-state compact-empty"><h2>No unload here</h2><p>Nothing loaded is due at this location.</p></section>` : ""}
+    ${Object.values(groups).length ? `
+      <article class="notice info cargo-elevator-hint">
+        <span>Hint</span>
+        <p>Pull one contract at a time from the cargo elevator, or only combine contracts that share the same destination. Station inventory shows totals, so mixed destinations quickly become hard to separate.</p>
+      </article>
+    ` : ""}
     ${Object.values(groups).length ? Object.values(groups).map(({ contract, rows }) => `
       <section class="stack action-contract-group">
         <div class="contract-group-heading">
