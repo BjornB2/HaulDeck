@@ -123,8 +123,24 @@ function getSearchCandidateLocations(session, state, options) {
   const candidates = new Set();
   if (currentStop?.workScu > 0) candidates.add(state.current);
   getRouteCandidateLocations(state.rows, state.current).forEach((location) => candidates.add(location));
+  const candidateStops = [...candidates]
+    .map((location) => ({
+      location,
+      stop: buildRouteStop(session, location, state.rows, onboardBeforeScu, zoneName, zoneLimit),
+    }))
+    .filter(({ stop }) => stop?.workScu > 0);
+  const hasAlternativeProgress = candidateStops.some(({ location, stop }) =>
+    location !== state.current &&
+    (stop.loadScu > 0 || getDeferredCargoToDestination(state.rows, location) === 0)
+  );
 
-  return [...candidates]
+  return candidateStops
+    .filter(({ stop }) => {
+      const futureCargoToSameDestination = stop.unloadScu > 0 ? getDeferredCargoToDestination(state.rows, stop.name) : 0;
+      const pureDeferredUnload = stop.unloadScu > 0 && stop.loadScu === 0 && futureCargoToSameDestination > 0;
+      return !pureDeferredUnload || !hasAlternativeProgress;
+    })
+    .map(({ location }) => location)
     .map((location) => scoreRouteCandidate(state.rows, state.current, new Set(state.visitCounts.keys()), location, capacityScu, zoneLimit, getLocationSystem))
     .sort((a, b) => b.score - a.score || a.firstIndex - b.firstIndex)
     .map((candidate) => candidate.location);
@@ -134,11 +150,15 @@ function getTransitionCost(state, stop, location, getLocationSystem) {
   const previousVisits = state.visitCounts.get(location) ?? 0;
   const fullLoadScu = getRemainingLoadScu(state.rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu));
   const unplannedLoadScu = Math.max(0, fullLoadScu - stop.loadScu);
+  const futureCargoToSameDestination = stop.unloadScu > 0 ? getDeferredCargoToDestination(state.rows, location) : 0;
+  const smallPickupOnlyPenalty = stop.loadScu > 0 && stop.unloadScu === 0 ? Math.max(0, 64 - stop.loadScu) * 200 : 0;
   const crossesSystem = getLocationSystem(state.current) && getLocationSystem(location) && getLocationSystem(state.current) !== getLocationSystem(location);
 
   let cost = 1000;
   cost += previousVisits * 2400;
   cost += unplannedLoadScu ? 900 + unplannedLoadScu * 18 : 0;
+  cost += futureCargoToSameDestination ? 5000 + futureCargoToSameDestination * 120 : 0;
+  cost += smallPickupOnlyPenalty;
   cost += stop.zoneLimited ? 1400 : 0;
   cost += stop.onboardAfterScu * 2;
   cost += stop.onboardDestinationsAfter * 45;

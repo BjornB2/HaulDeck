@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=38";
+import { getRouteChecklist } from "./route-planner.js?v=39";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -738,7 +738,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v38",
+    appVersion: "hauldeck-v39",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
