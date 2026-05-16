@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=47";
+import { getRouteChecklist } from "./route-planner.js?v=48";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -766,7 +766,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v47",
+    appVersion: "hauldeck-v48",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -1071,15 +1071,13 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
 
   if (onboardZones.length) {
     selected.push(...onboardZones);
-    onboardZones.forEach((zoneId) => {
-      if (remainingScu <= 0) return;
-      const usedScu = zoneLoads.get(zoneId) ?? 0;
-      const roomScu = targetScu > 0 ? Math.max(0, targetScu - usedScu) : remainingScu;
-      if (roomScu <= 0) return;
-      const placedScu = Math.min(remainingScu, roomScu);
-      addZoneLoad(destinationZoneLoads, zoneAssignments, destination, zoneId, placedScu);
-      remainingScu -= placedScu;
-    });
+    remainingScu = placeScuInZones(destinationZoneLoads, zoneAssignments, destination, onboardZones, remainingScu, targetScu);
+  }
+
+  const existingDestinationZones = [...zoneLoads.keys()].filter((zoneId) => zoneAssignments.get(zoneId) === destination);
+  if (existingDestinationZones.length) {
+    selected.push(...existingDestinationZones);
+    remainingScu = placeScuInZones(destinationZoneLoads, zoneAssignments, destination, existingDestinationZones, remainingScu, targetScu);
   }
 
   const reusableZones = preferredZoneIds.filter((zoneId) => !zoneAssignments.has(zoneId));
@@ -1101,24 +1099,27 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
     remainingScu -= placedScu;
   }
 
-  const fallbackZones = [...zoneLoads.keys()].filter((zoneId) => zoneAssignments.get(zoneId) === destination);
-  fallbackZones.forEach((zoneId) => {
+  if (remainingScu > 0 && existingDestinationZones.length) {
+    addZoneLoad(destinationZoneLoads, zoneAssignments, destination, existingDestinationZones[0], remainingScu);
+    selected.push(existingDestinationZones[0]);
+  }
+
+  return unique(selected);
+}
+
+function placeScuInZones(destinationZoneLoads, zoneAssignments, destination, zoneIds, scu, targetScu) {
+  let remainingScu = scu;
+  zoneIds.forEach((zoneId) => {
     if (remainingScu <= 0) return;
+    const zoneLoads = destinationZoneLoads.get(destination) ?? new Map();
     const usedScu = zoneLoads.get(zoneId) ?? 0;
     const roomScu = targetScu > 0 ? Math.max(0, targetScu - usedScu) : remainingScu;
     if (roomScu <= 0) return;
     const placedScu = Math.min(remainingScu, roomScu);
     addZoneLoad(destinationZoneLoads, zoneAssignments, destination, zoneId, placedScu);
-    selected.push(zoneId);
     remainingScu -= placedScu;
   });
-
-  if (remainingScu > 0 && fallbackZones.length) {
-    addZoneLoad(destinationZoneLoads, zoneAssignments, destination, fallbackZones[0], remainingScu);
-    selected.push(fallbackZones[0]);
-  }
-
-  return unique(selected);
+  return remainingScu;
 }
 
 function addDestinationZone(map, destination, zoneId) {
