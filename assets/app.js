@@ -57,6 +57,7 @@ function createSession() {
     status: "active",
     shipCapacityScu: 0,
     startLocation: "",
+    routeLocation: "",
     createdAt: now,
     updatedAt: now,
     contracts: [],
@@ -113,6 +114,7 @@ function normalizeData(data) {
       ...session,
       shipCapacityScu: Math.max(0, Math.floor(Number(session.shipCapacityScu) || 0)),
       startLocation: String(session.startLocation ?? session.currentLocation ?? "").trim(),
+      routeLocation: String(session.routeLocation ?? "").trim(),
       zones: normalizeZones(session.zones),
       contracts: (session.contracts ?? []).map(normalizeContract),
     })),
@@ -394,6 +396,7 @@ function renderRouteChecklist(session) {
     startLocation: routeOrigin,
     zoneName,
     getLocationSystem,
+    forceStartStop: true,
   });
   if (!stops.length) return "";
   const showSystems = new Set(stops.map((stop) => getLocationSystem(stop.name)).filter(Boolean)).size > 1;
@@ -776,7 +779,7 @@ async function goToActions(location) {
   const session = getCurrentSession();
   const nextLocation = location.trim();
   if (!session || !nextLocation) return;
-  await saveSession(autoAssignZonesForLocation(session, nextLocation));
+  await saveSession(autoAssignZonesForLocation({ ...session, routeLocation: nextLocation }, nextLocation));
   state.activeLocation = nextLocation;
   state.screen = { name: "load", sessionId: session.id };
   render();
@@ -858,7 +861,10 @@ async function setProgress(contractId, itemId, mode, value) {
       updatedAt: new Date().toISOString(),
     });
   });
-  await saveSession({ ...session, contracts, updatedAt: new Date().toISOString() });
+  const nextSession = { ...session, contracts, updatedAt: new Date().toISOString() };
+  const routeLocation = getNextRouteLocation(nextSession);
+  state.activeLocation = routeLocation;
+  await saveSession({ ...nextSession, routeLocation });
 }
 
 function stepProgress(contractId, itemId, mode, delta) {
@@ -888,7 +894,10 @@ async function maxUnloadZone(zoneId) {
     }),
     updatedAt: new Date().toISOString(),
   }));
-  await saveSession({ ...session, contracts, updatedAt: new Date().toISOString() });
+  const nextSession = { ...session, contracts, updatedAt: new Date().toISOString() };
+  const routeLocation = getNextRouteLocation(nextSession);
+  state.activeLocation = routeLocation;
+  await saveSession({ ...nextSession, routeLocation });
 }
 
 async function renameZone(zoneId, name) {
@@ -984,7 +993,7 @@ function getWarnings(session) {
   const cargo = allCargo(session).filter(({ contract }) => contract.status !== "cancelled");
   const unassigned = cargo.filter((row) => !row.item.assignedZoneId);
   if (unassigned.length) warnings.push({ level: "warning", message: `${unassigned.length} cargo line${unassigned.length === 1 ? "" : "s"} have unassigned cargo.` });
-  const zoneLimitedStops = getRouteChecklist(session, { startLocation: getRouteOrigin(session), zoneName, getLocationSystem }).filter((stop) => stop.zoneLimited);
+  const zoneLimitedStops = getRouteChecklist(session, { startLocation: getRouteOrigin(session), zoneName, getLocationSystem, forceStartStop: true }).filter((stop) => stop.zoneLimited);
   if (zoneLimitedStops.length) warnings.push({ level: "info", message: `Route adjusted for ${session.zones.length} cargo zones. Add one more cargo zone for further optimized routing for this trip.` });
   getDestinationSummaries(session).forEach((destination) => {
     const zones = destination.zones.filter((zone) => zone !== "Unassigned");
@@ -1214,22 +1223,30 @@ function isCompletedContract(contract) {
 }
 
 function getActionLocation() {
-  return state.activeLocation;
+  return state.activeLocation || getCurrentSession()?.routeLocation || "";
 }
 
 function getRouteOrigin(session) {
   if (state.activeLocation) return state.activeLocation;
-  return hasRunProgress(session) ? "" : session.startLocation;
+  if (session.routeLocation) return session.routeLocation;
+  return session.startLocation;
 }
 
-function hasRunProgress(session) {
-  return allCargo(session).some(({ item }) => item.loadedScu > 0 || item.unloadedScu > 0);
+function getNextRouteLocation(session) {
+  const stops = getRouteChecklist(session, {
+    startLocation: getRouteOrigin(session),
+    zoneName,
+    getLocationSystem,
+    forceStartStop: true,
+  });
+  return stops[0]?.name ?? "";
 }
 
 function normalizeSession(session) {
   return {
     ...session,
     shipCapacityScu: Math.max(0, Math.floor(Number(session.shipCapacityScu) || 0)),
+    routeLocation: String(session.routeLocation ?? "").trim(),
     zones: normalizeZones(session.zones),
     contracts: (session.contracts ?? []).map(normalizeContract),
   };

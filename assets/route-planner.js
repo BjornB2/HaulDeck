@@ -5,6 +5,7 @@ export function getRouteChecklist(session, options = {}) {
     startLocation = "",
     zoneName = () => "Unassigned",
     getLocationSystem = () => "",
+    forceStartStop = false,
   } = options;
   const zoneLimit = getZoneLimit(session);
   const rows = allCargo(session)
@@ -22,8 +23,9 @@ export function getRouteChecklist(session, options = {}) {
 
   for (let guard = 0; guard < rows.length * 20 + 50 && current; guard += 1) {
     const onboardBeforeScu = getSimulatedOnboardScu(rows);
-    const shouldDeferLoad = shouldDeferConstrainedPickup(current, rows, capacityScu, onboardBeforeScu);
-    const shouldDeferUnload = !shouldDeferLoad && shouldDeferSplitDelivery(current, rows, capacityScu, onboardBeforeScu);
+    const isForcedCurrentStop = forceStartStop && guard === 0 && current === startLocation;
+    const shouldDeferLoad = !isForcedCurrentStop && shouldDeferConstrainedPickup(current, rows, capacityScu, onboardBeforeScu);
+    const shouldDeferUnload = !isForcedCurrentStop && !shouldDeferLoad && shouldDeferSplitDelivery(current, rows, capacityScu, onboardBeforeScu);
     const shouldDeferStop = shouldDeferLoad || shouldDeferUnload;
     const stop = shouldDeferStop ? null : buildRouteStop(session, current, rows, onboardBeforeScu, zoneName, zoneLimit);
     const changed = shouldDeferStop ? false : applyRouteStop(current, rows, capacityScu, zoneLimit);
