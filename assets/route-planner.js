@@ -18,20 +18,29 @@ export function getRouteChecklist(session, options = {}) {
     }));
   const stops = [];
   const visited = new Set();
+  const deferredLocations = new Set();
   const capacityScu = getShipCapacityScu(session);
   let current = rows.length ? startLocation || findFirstWorkLocation(rows) : "";
 
   for (let guard = 0; guard < rows.length * 20 + 50 && current; guard += 1) {
     const onboardBeforeScu = getSimulatedOnboardScu(rows);
     const isForcedCurrentStop = forceStartStop && guard === 0 && current === startLocation;
-    const shouldDeferLoad = !isForcedCurrentStop && shouldDeferConstrainedPickup(current, rows, capacityScu, onboardBeforeScu);
-    const shouldDeferUnload = !isForcedCurrentStop && !shouldDeferLoad && shouldDeferSplitDelivery(current, rows, capacityScu, onboardBeforeScu);
+    const wasDeferredWithoutProgress = deferredLocations.has(current);
+    const canDeferCurrentStop = !isForcedCurrentStop && !wasDeferredWithoutProgress;
+    const shouldDeferLoad = canDeferCurrentStop && shouldDeferConstrainedPickup(current, rows, capacityScu, onboardBeforeScu);
+    const shouldDeferUnload = canDeferCurrentStop && !shouldDeferLoad && shouldDeferSplitDelivery(current, rows, capacityScu, onboardBeforeScu);
     const shouldDeferStop = shouldDeferLoad || shouldDeferUnload;
     const stop = shouldDeferStop ? null : buildRouteStop(session, current, rows, onboardBeforeScu, zoneName, zoneLimit);
     const changed = shouldDeferStop ? false : applyRouteStop(current, rows, capacityScu, zoneLimit);
 
     if (stop && stop.workScu > 0) {
       stops.push(stop);
+    }
+
+    if (changed) {
+      deferredLocations.clear();
+    } else if (shouldDeferStop) {
+      deferredLocations.add(current);
     }
 
     visited.add(current);

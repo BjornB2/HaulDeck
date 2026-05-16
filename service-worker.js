@@ -1,4 +1,4 @@
-const CACHE_NAME = "hauldeck-v35";
+const CACHE_NAME = "hauldeck-v36";
 const APP_SHELL = [
   "./",
   "./index.html",
