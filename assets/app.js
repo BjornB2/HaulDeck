@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=43";
+import { getRouteChecklist } from "./route-planner.js?v=44";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -766,7 +766,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v43",
+    appVersion: "hauldeck-v44",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -1099,7 +1099,7 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
 }
 
 function takeAvailableZone(availableZones, zoneAssignments, destination, preferredZoneIds = []) {
-  const preferredIndex = availableZones.findIndex((zone) => preferredZoneIds.includes(zone.id) && (!zoneAssignments.has(zone.id) || zoneAssignments.get(zone.id) === destination));
+  const preferredIndex = availableZones.findIndex((zone) => preferredZoneIds.includes(zone.id) && !zoneAssignments.has(zone.id));
   if (preferredIndex >= 0) return availableZones.splice(preferredIndex, 1)[0].id;
   const index = availableZones.findIndex((zone) => !zoneAssignments.has(zone.id));
   return index >= 0 ? availableZones.splice(index, 1)[0].id : "";
