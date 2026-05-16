@@ -388,8 +388,9 @@ function renderContractForm(session) {
 }
 
 function renderRouteChecklist(session) {
+  const routeOrigin = getRouteOrigin(session);
   const stops = getRouteChecklist(session, {
-    startLocation: session.startLocation,
+    startLocation: routeOrigin,
     zoneName,
     getLocationSystem,
   });
@@ -675,10 +676,7 @@ function bindEvents() {
       setActiveLocation(element.dataset.location);
     });
     if (action === "go-actions") element.addEventListener("click", () => {
-      setActiveLocation(element.dataset.location, false);
-      state.screen = { name: "load", sessionId: getCurrentSession()?.id };
-      render();
-      window.scrollTo({ top: 0, behavior: "instant" });
+      goToActions(element.dataset.location);
     });
     if (action === "auto-assign") element.addEventListener("click", () => saveSession(autoAssignZones(getCurrentSession())));
     if (action === "rename-zone") element.addEventListener("change", (event) => renameZone(element.dataset.zoneId, event.currentTarget.value));
@@ -754,6 +752,17 @@ async function setStartLocation(sessionId, value, shouldRender = true) {
       : item),
   });
   if (shouldRender) render();
+}
+
+async function goToActions(location) {
+  const session = getCurrentSession();
+  const nextLocation = location.trim();
+  if (!session || !nextLocation) return;
+  await saveSession(autoAssignZonesForLocation(session, nextLocation));
+  state.activeLocation = nextLocation;
+  state.screen = { name: "load", sessionId: session.id };
+  render();
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 function addCargoLine() {
@@ -917,12 +926,47 @@ function autoAssignZones(session) {
   return { ...session, contracts: assignedContracts, updatedAt: new Date().toISOString() };
 }
 
+function autoAssignZonesForLocation(session, location) {
+  const destinationToZone = new Map();
+  const usedZones = new Set();
+  const activeContracts = session.contracts.filter((contract) => contract.status !== "cancelled");
+
+  activeContracts.forEach((contract) => {
+    contract.items.forEach((item) => {
+      const isOnboard = item.loadedScu > item.unloadedScu;
+      const isLoadingHere = contract.pickupLocation === location && item.loadedScu < item.quantityScu;
+      if (!item.assignedZoneId || (!isOnboard && !isLoadingHere)) return;
+      destinationToZone.set(item.dropoffLocation, item.assignedZoneId);
+      usedZones.add(item.assignedZoneId);
+    });
+  });
+
+  const availableZones = session.zones.filter((zone) => !usedZones.has(zone.id));
+  const contracts = session.contracts.map((contract) => {
+    if (contract.status === "cancelled" || contract.pickupLocation !== location) return contract;
+    return normalizeContract({
+      ...contract,
+      items: contract.items.map((item) => {
+        if (item.assignedZoneId || item.loadedScu >= item.quantityScu) return item;
+        const existing = destinationToZone.get(item.dropoffLocation);
+        if (existing) return { ...item, assignedZoneId: existing };
+        const nextZone = availableZones.shift();
+        if (!nextZone) return item;
+        destinationToZone.set(item.dropoffLocation, nextZone.id);
+        return { ...item, assignedZoneId: nextZone.id };
+      }),
+    });
+  });
+
+  return { ...session, contracts, updatedAt: new Date().toISOString() };
+}
+
 function getWarnings(session) {
   const warnings = [];
   const cargo = allCargo(session).filter(({ contract }) => contract.status !== "cancelled");
   const unassigned = cargo.filter((row) => !row.item.assignedZoneId);
   if (unassigned.length) warnings.push({ level: "warning", message: `${unassigned.length} cargo line${unassigned.length === 1 ? "" : "s"} have unassigned cargo.` });
-  const zoneLimitedStops = getRouteChecklist(session, { startLocation: session.startLocation, zoneName, getLocationSystem }).filter((stop) => stop.zoneLimited);
+  const zoneLimitedStops = getRouteChecklist(session, { startLocation: getRouteOrigin(session), zoneName, getLocationSystem }).filter((stop) => stop.zoneLimited);
   if (zoneLimitedStops.length) warnings.push({ level: "info", message: `Route adjusted for ${session.zones.length} cargo zones. Add one more cargo zone for further optimized routing for this trip.` });
   getDestinationSummaries(session).forEach((destination) => {
     const zones = destination.zones.filter((zone) => zone !== "Unassigned");
@@ -1153,6 +1197,15 @@ function isCompletedContract(contract) {
 
 function getActionLocation() {
   return state.activeLocation;
+}
+
+function getRouteOrigin(session) {
+  if (state.activeLocation) return state.activeLocation;
+  return hasRunProgress(session) ? "" : session.startLocation;
+}
+
+function hasRunProgress(session) {
+  return allCargo(session).some(({ item }) => item.loadedScu > 0 || item.unloadedScu > 0);
 }
 
 function normalizeSession(session) {
