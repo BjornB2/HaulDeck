@@ -1,10 +1,10 @@
-const CACHE_NAME = "hauldeck-v40";
+const CACHE_NAME = "hauldeck-v41";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./assets/app.css?v=40",
-  "./assets/app.js?v=40",
-  "./assets/route-planner.js?v=40",
+  "./assets/app.css?v=41",
+  "./assets/app.js?v=41",
+  "./assets/route-planner.js?v=41",
   "./public/manifest.webmanifest",
   "./public/icons/icon.svg",
   "./public/data/locations.json",

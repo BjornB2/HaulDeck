@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=40";
+import { getRouteChecklist } from "./route-planner.js?v=41";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -26,6 +26,7 @@ let state = {
   showArchived: false,
   activeLocation: "",
   dismissedCargoHint: readDismissedCargoHint(),
+  undo: null,
 };
 
 boot();
@@ -427,7 +428,7 @@ function renderRouteChecklist(session) {
               ${stop.unloadScu ? `<span>${stop.unloadScu} unload</span>` : ""}
               ${stop.loadScu ? `<span>${stop.loadScu} load</span>` : ""}
               <span>On board after: ${stop.onboardAfterScu} SCU</span>
-              ${stop.zoneLimit ? `<span>Destinations aboard: ${stop.onboardDestinationsAfter}/${stop.zoneLimit}</span>` : ""}
+              ${stop.zoneLimit ? `<span>Zone slots aboard: ${stop.onboardDestinationsAfter}/${stop.zoneLimit}</span>` : ""}
               ${stop.capacityScu ? `<span class="${stop.overCapacity ? "capacity-danger" : "capacity-ok"}">Max ${stop.capacityScu}</span>` : ""}
             </div>
             <button class="primary full-width destination-action" data-action="go-actions" data-location="${escapeAttribute(stop.name)}">I am here now</button>
@@ -464,6 +465,7 @@ function renderLoadMode(session) {
 
 function renderActionsMode(session) {
   const actionLocation = getActionLocation();
+  const canUndo = state.undo?.session?.id === session.id;
   const unloadRows = getUnloadRows(session);
   const unloadGroups = Object.values(unloadRows.reduce((map, row) => {
     const zoneId = row.item.assignedZoneId || "";
@@ -479,7 +481,13 @@ function renderActionsMode(session) {
     return map;
   }, {}));
   return `
-    <section class="mode-header"><div><p class="eyebrow">Location actions</p><h2>${escapeHtml(actionLocation || "Choose a stop")}</h2></div><button class="secondary" data-nav="dashboard" data-session-id="${session.id}">Done</button></section>
+    <section class="mode-header">
+      <div><p class="eyebrow">Location actions</p><h2>${escapeHtml(actionLocation || "Choose a stop")}</h2></div>
+      <div class="button-row">
+        ${canUndo ? `<button class="secondary" data-action="undo-progress">Undo</button>` : ""}
+        <button class="secondary" data-nav="dashboard" data-session-id="${session.id}">Done</button>
+      </div>
+    </section>
     ${unloadGroups.length ? `
       <section class="stack">
         <h3 class="section-title">Unload here first</h3>
@@ -689,6 +697,7 @@ function bindEvents() {
     if (action === "rename-zone") element.addEventListener("change", (event) => renameZone(element.dataset.zoneId, event.currentTarget.value));
     if (action === "assign-zone") element.addEventListener("change", (event) => assignZone(element.dataset.contractId, element.dataset.itemId, event.currentTarget.value));
     if (action === "dismiss-cargo-hint") element.addEventListener("click", dismissCargoHint);
+    if (action === "undo-progress") element.addEventListener("click", undoProgress);
     if (action === "copy-debug-export") element.addEventListener("click", copyDebugExport);
     if (action === "refresh-app-cache") element.addEventListener("click", refreshAppCache);
   });
@@ -740,7 +749,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v40",
+    appVersion: "hauldeck-v41",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -885,6 +894,7 @@ async function deleteContract(sessionId, contractId) {
 async function setProgress(contractId, itemId, mode, value) {
   const session = getCurrentSession();
   if (!session) return;
+  pushUndo(session);
   const contracts = session.contracts.map((contract) => {
     if (contract.id !== contractId) return contract;
     return normalizeContract({
@@ -898,9 +908,7 @@ async function setProgress(contractId, itemId, mode, value) {
     });
   });
   const nextSession = { ...session, contracts, updatedAt: new Date().toISOString() };
-  const routeLocation = getNextRouteLocation(nextSession);
-  state.activeLocation = routeLocation;
-  await saveSession({ ...nextSession, routeLocation });
+  await saveSession(nextSession);
 }
 
 function stepProgress(contractId, itemId, mode, delta) {
@@ -920,6 +928,7 @@ async function maxUnloadZone(zoneId) {
   const session = getCurrentSession();
   const actionLocation = getActionLocation();
   if (!session || !actionLocation) return;
+  pushUndo(session);
   const normalizedZoneId = zoneId || undefined;
   const contracts = session.contracts.map((contract) => normalizeContract({
     ...contract,
@@ -931,9 +940,22 @@ async function maxUnloadZone(zoneId) {
     updatedAt: new Date().toISOString(),
   }));
   const nextSession = { ...session, contracts, updatedAt: new Date().toISOString() };
-  const routeLocation = getNextRouteLocation(nextSession);
-  state.activeLocation = routeLocation;
-  await saveSession({ ...nextSession, routeLocation });
+  await saveSession(nextSession);
+}
+
+async function undoProgress() {
+  const snapshot = state.undo?.session;
+  if (!snapshot) return;
+  state.undo = null;
+  state.activeLocation = snapshot.routeLocation || state.activeLocation;
+  await saveSession(snapshot);
+}
+
+function pushUndo(session) {
+  state.undo = {
+    session: structuredClone(session),
+    createdAt: new Date().toISOString(),
+  };
 }
 
 async function renameZone(zoneId, name) {
@@ -964,13 +986,16 @@ async function assignZone(contractId, itemId, zoneId) {
 
 function autoAssignZones(session) {
   const destinationToZone = new Map();
+  const destinationZoneLoads = new Map();
   const usedZones = new Set();
+  const targetScu = getZoneTargetScu(session);
   const contracts = session.contracts.map((contract) => {
     const items = contract.items.map((item) => {
       const isActiveCargo = contract.status !== "cancelled" && item.unloadedScu < item.quantityScu;
       if (isActiveCargo && item.assignedZoneId) {
         destinationToZone.set(item.dropoffLocation, item.assignedZoneId);
         usedZones.add(item.assignedZoneId);
+        addZoneLoad(destinationZoneLoads, item.dropoffLocation, item.assignedZoneId, getRemainingItemScu(item));
       }
       return item;
     });
@@ -982,12 +1007,8 @@ function autoAssignZones(session) {
     items: contract.items.map((item) => {
       if (item.assignedZoneId) return item;
       if (item.loadedScu > 0) return item;
-      const existing = destinationToZone.get(item.dropoffLocation);
-      if (existing) return { ...item, assignedZoneId: existing };
-      const nextZone = availableZones.shift();
-      if (!nextZone) return item;
-      destinationToZone.set(item.dropoffLocation, nextZone.id);
-      return { ...item, assignedZoneId: nextZone.id };
+      const zoneId = chooseZoneForDestination(destinationZoneLoads, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, destinationToZone);
+      return zoneId ? { ...item, assignedZoneId: zoneId } : item;
     }),
   }));
   return { ...session, contracts: assignedContracts, updatedAt: new Date().toISOString() };
@@ -995,16 +1016,20 @@ function autoAssignZones(session) {
 
 function autoAssignZonesForLocation(session, location) {
   const destinationToZone = new Map();
+  const destinationZoneLoads = new Map();
   const usedZones = new Set();
+  const targetScu = getZoneTargetScu(session);
   const activeContracts = session.contracts.filter((contract) => contract.status !== "cancelled");
 
   activeContracts.forEach((contract) => {
     contract.items.forEach((item) => {
-      const isOnboard = item.loadedScu > item.unloadedScu;
+      const unloadsHereFirst = item.dropoffLocation === location && item.loadedScu > item.unloadedScu;
+      const isOnboard = item.loadedScu > item.unloadedScu && !unloadsHereFirst;
       const isLoadingHere = contract.pickupLocation === location && item.loadedScu < item.quantityScu;
       if (!item.assignedZoneId || (!isOnboard && !isLoadingHere)) return;
       destinationToZone.set(item.dropoffLocation, item.assignedZoneId);
       usedZones.add(item.assignedZoneId);
+      addZoneLoad(destinationZoneLoads, item.dropoffLocation, item.assignedZoneId, getRemainingItemScu(item));
     });
   });
 
@@ -1016,17 +1041,50 @@ function autoAssignZonesForLocation(session, location) {
       items: contract.items.map((item) => {
         if (item.assignedZoneId || item.loadedScu >= item.quantityScu) return item;
         if (item.loadedScu > 0) return item;
-        const existing = destinationToZone.get(item.dropoffLocation);
-        if (existing) return { ...item, assignedZoneId: existing };
-        const nextZone = availableZones.shift();
-        if (!nextZone) return item;
-        destinationToZone.set(item.dropoffLocation, nextZone.id);
-        return { ...item, assignedZoneId: nextZone.id };
+        const zoneId = chooseZoneForDestination(destinationZoneLoads, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, destinationToZone);
+        return zoneId ? { ...item, assignedZoneId: zoneId } : item;
       }),
     });
   });
 
   return { ...session, contracts, updatedAt: new Date().toISOString() };
+}
+
+function chooseZoneForDestination(destinationZoneLoads, availableZones, destination, scu, targetScu, destinationToZone) {
+  const zoneLoads = destinationZoneLoads.get(destination) ?? new Map();
+  const reusableZone = [...zoneLoads.entries()].find(([, usedScu]) => targetScu <= 0 || usedScu + scu <= targetScu)?.[0];
+  if (reusableZone) {
+    addZoneLoad(destinationZoneLoads, destination, reusableZone, scu);
+    destinationToZone.set(destination, reusableZone);
+    return reusableZone;
+  }
+  const nextZone = availableZones.shift()?.id;
+  if (nextZone) {
+    addZoneLoad(destinationZoneLoads, destination, nextZone, scu);
+    destinationToZone.set(destination, nextZone);
+    return nextZone;
+  }
+  const fallback = destinationToZone.get(destination);
+  if (fallback) addZoneLoad(destinationZoneLoads, destination, fallback, scu);
+  return fallback;
+}
+
+function addZoneLoad(destinationZoneLoads, destination, zoneId, scu) {
+  if (!zoneId) return;
+  const zoneLoads = destinationZoneLoads.get(destination) ?? new Map();
+  zoneLoads.set(zoneId, (zoneLoads.get(zoneId) ?? 0) + scu);
+  destinationZoneLoads.set(destination, zoneLoads);
+}
+
+function getRemainingItemScu(item) {
+  return Math.max(0, item.quantityScu - item.unloadedScu);
+}
+
+function getZoneTargetScu(session) {
+  const capacity = Math.max(0, Math.floor(Number(session.shipCapacityScu) || 0));
+  const zones = Math.max(0, session.zones?.length ?? 0);
+  if (!capacity || !zones) return 0;
+  return capacity / zones;
 }
 
 function getWarnings(session) {

@@ -1,5 +1,5 @@
-const ROUTE_BEAM_WIDTH = 240;
-const MAX_LOAD_VARIANTS = 28;
+const ROUTE_BEAM_WIDTH = 2400;
+const MAX_LOAD_VARIANTS = 96;
 
 export function getRouteChecklist(session, options = {}) {
   const {
@@ -45,6 +45,7 @@ function findOptimizedRouteStops(session, rows, options) {
     zoneName,
     getLocationSystem,
   };
+  config.zoneCapacityScu = getZoneCapacityScu(config.capacityScu, config.zoneLimit);
   const initialState = {
     rows: cloneRows(rows),
     current: start,
@@ -171,6 +172,7 @@ function getLoadVariants(loadRows, rowsAfterUnload, config) {
           availableScu -= amount;
         });
       });
+      if (!canApplyLoads(rowsAfterUnload, loads, config)) return;
       const intendedScu = groups.reduce((total, group) => total + group.remainingScu, 0);
       addLoadVariant(variants, loads, intendedScu <= capacityLeft);
     });
@@ -221,7 +223,7 @@ function getCombinations(items, size, limit, start = 0, prefix = [], output = []
 function canAddDestination(rows, destination, zoneId, zoneLimit) {
   const onboard = getOnboardDestinationDetails(rows);
   if (onboard.destinations.has(destination)) return true;
-  if (zoneLimit > 0 && onboard.destinations.size >= zoneLimit) return false;
+  if (zoneLimit > 0 && onboard.zoneSlots >= zoneLimit) return false;
   if (!zoneId) return true;
   const occupiedBy = onboard.zones.get(zoneId);
   return !occupiedBy || occupiedBy === destination;
@@ -231,11 +233,13 @@ function canLoadGroups(rows, groups, zoneLimit) {
   const onboard = getOnboardDestinationDetails(rows);
   const destinations = new Set(onboard.destinations);
   const zones = new Map(onboard.zones);
+  let zoneSlots = onboard.zoneSlots;
 
   return groups.every((group) => {
     if (!destinations.has(group.destination)) {
-      if (zoneLimit > 0 && destinations.size >= zoneLimit) return false;
+      if (zoneLimit > 0 && zoneSlots >= zoneLimit) return false;
       destinations.add(group.destination);
+      zoneSlots += 1;
     }
     if (!group.zoneId) return true;
     const occupiedBy = zones.get(group.zoneId);
@@ -245,10 +249,19 @@ function canLoadGroups(rows, groups, zoneLimit) {
   });
 }
 
+function canApplyLoads(rows, loads, config) {
+  const afterRows = cloneRows(rows);
+  loads.forEach((load) => {
+    afterRows[load.rowIndex].item.loadedScu += load.amount;
+  });
+  const onboard = getOnboardDestinationDetails(afterRows, config.zoneCapacityScu);
+  return config.zoneLimit <= 0 || onboard.zoneSlots <= config.zoneLimit;
+}
+
 function buildRouteStopFromRows(session, location, beforeRows, afterRows, unloadRows, loadRows, unloadScu, loadScu, config) {
   const onboardBeforeScu = getSimulatedOnboardScu(beforeRows);
   const allRows = [...unloadRows, ...loadRows];
-  const onboardDestinationsAfter = getOnboardDestinationDetails(afterRows).destinations;
+  const onboardAfter = getOnboardDestinationDetails(afterRows, config.zoneCapacityScu);
   const statusLabel = unloadScu && loadScu ? "Unload, then load" : unloadScu ? "Unload" : "Load";
 
   return {
@@ -262,7 +275,7 @@ function buildRouteStopFromRows(session, location, beforeRows, afterRows, unload
     workScu: unloadScu + loadScu,
     onboardBeforeScu,
     onboardAfterScu: getSimulatedOnboardScu(afterRows),
-    onboardDestinationsAfter: onboardDestinationsAfter.size,
+    onboardDestinationsAfter: onboardAfter.zoneSlots,
     zoneLimit: config.zoneLimit,
     zoneLimited: hasZoneLimitedLoads(beforeRows, afterRows, location, config.zoneLimit),
     capacityScu: config.capacityScu,
@@ -347,17 +360,23 @@ function getCapacityLeft(rows, capacityScu) {
   return Math.max(0, capacityScu - getSimulatedOnboardScu(rows));
 }
 
-function getOnboardDestinationDetails(rows) {
+function getOnboardDestinationDetails(rows, zoneCapacityScu = 0) {
   const destinations = new Set();
   const zones = new Map();
+  const scuByDestination = new Map();
   rows.forEach((row) => {
     if (row.item.loadedScu <= row.item.unloadedScu) return;
+    const onboardScu = row.item.loadedScu - row.item.unloadedScu;
     destinations.add(row.item.dropoffLocation);
+    scuByDestination.set(row.item.dropoffLocation, (scuByDestination.get(row.item.dropoffLocation) ?? 0) + onboardScu);
     if (row.item.assignedZoneId) {
       zones.set(row.item.assignedZoneId, row.item.dropoffLocation);
     }
   });
-  return { destinations, zones };
+  const zoneSlots = zoneCapacityScu > 0
+    ? [...scuByDestination.values()].reduce((total, scu) => total + Math.max(1, Math.ceil(scu / zoneCapacityScu)), 0)
+    : destinations.size;
+  return { destinations, zones, scuByDestination, zoneSlots };
 }
 
 function hasZoneLimitedLoads(beforeRows, afterRows, location, zoneLimit) {
@@ -368,7 +387,7 @@ function hasZoneLimitedLoads(beforeRows, afterRows, location, zoneLimit) {
     const before = beforeRows[index];
     return total + Math.max(0, row.item.loadedScu - before.item.loadedScu);
   }, 0);
-  return loadedScu < getRemainingLoadScu(loadRows) && getOnboardDestinationDetails(afterRows).destinations.size >= zoneLimit;
+  return loadedScu < getRemainingLoadScu(loadRows) && getOnboardDestinationDetails(afterRows).zoneSlots >= zoneLimit;
 }
 
 function hasFutureCargoToDestination(rows, destination) {
@@ -408,6 +427,11 @@ function getShipCapacityScu(session) {
 
 function getZoneLimit(session) {
   return Math.max(0, session.zones?.length ?? 0);
+}
+
+function getZoneCapacityScu(capacityScu, zoneLimit) {
+  if (capacityScu <= 0 || zoneLimit <= 0) return 0;
+  return capacityScu / zoneLimit;
 }
 
 function getFirstLocationIndex(rows, location) {
