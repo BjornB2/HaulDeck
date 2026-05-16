@@ -300,6 +300,7 @@ function renderDashboard(session) {
         <button class="secondary" data-action="toggle-archive" data-session-id="${session.id}">${session.status === "active" ? "Archive run" : "Restore run"}</button>
         <button class="danger-button" data-action="delete-session" data-session-id="${session.id}">Delete run</button>
       </div>
+      <button class="secondary full-width" data-action="copy-debug-export">Copy debug export</button>
       <button class="secondary full-width" data-action="refresh-app-cache">Refresh app cache</button>
     </section>
   `;
@@ -686,6 +687,7 @@ function bindEvents() {
     if (action === "rename-zone") element.addEventListener("change", (event) => renameZone(element.dataset.zoneId, event.currentTarget.value));
     if (action === "assign-zone") element.addEventListener("change", (event) => assignZone(element.dataset.contractId, element.dataset.itemId, event.currentTarget.value));
     if (action === "dismiss-cargo-hint") element.addEventListener("click", dismissCargoHint);
+    if (action === "copy-debug-export") element.addEventListener("click", copyDebugExport);
     if (action === "refresh-app-cache") element.addEventListener("click", refreshAppCache);
   });
 
@@ -715,6 +717,38 @@ async function refreshAppCache() {
   } finally {
     window.location.replace(`${window.location.pathname}?refresh=${Date.now()}`);
   }
+}
+
+async function copyDebugExport() {
+  const session = getCurrentSession();
+  if (!session) return;
+  const exportData = createDebugExport(session);
+  const text = JSON.stringify(exportData, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    alert("Debug export copied. You can paste it into the chat.");
+  } catch {
+    window.prompt("Copy this debug export and paste it into the chat.", text);
+  }
+}
+
+function createDebugExport(session) {
+  const routeOrigin = getRouteOrigin(session);
+  return {
+    app: "HaulDeck",
+    exportType: "debug-run",
+    exportedAt: new Date().toISOString(),
+    appVersion: "hauldeck-v35",
+    routeOrigin,
+    activeLocation: state.activeLocation,
+    routePlan: getRouteChecklist(session, {
+      startLocation: routeOrigin,
+      zoneName,
+      getLocationSystem,
+      forceStartStop: true,
+    }),
+    session,
+  };
 }
 
 async function createNewSession() {
