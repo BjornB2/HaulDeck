@@ -274,6 +274,13 @@ p {
   font-size: 0.76rem;
 }
 
+.zone-pill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
 .zone-swatch {
   display: inline-block;
   width: 0.72rem;

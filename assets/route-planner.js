@@ -152,7 +152,7 @@ function getLoadVariants(loadRows, rowsAfterUnload, config) {
 
   const destinationGroups = groupLoadRowsByDestination(loadRows);
   const candidates = destinationGroups
-    .filter((group) => canAddDestination(rowsAfterUnload, group.destination, group.zoneId, config.zoneLimit))
+    .filter((group) => canAddDestination(rowsAfterUnload, group.destination, group.zoneIds, config.zoneLimit))
     .sort((a, b) => b.remainingScu - a.remainingScu || a.firstIndex - b.firstIndex);
 
   const variants = new Map();
@@ -188,7 +188,7 @@ function groupLoadRowsByDestination(loadRows) {
   loadRows.forEach((row) => {
     const group = groups.get(row.item.dropoffLocation) ?? {
       destination: row.item.dropoffLocation,
-      zoneId: row.item.assignedZoneId ?? "",
+      zoneIds: [],
       rows: [],
       remainingScu: 0,
       firstIndex: row.index,
@@ -196,7 +196,7 @@ function groupLoadRowsByDestination(loadRows) {
     group.rows.push(row);
     group.remainingScu += row.item.quantityScu - row.item.loadedScu;
     group.firstIndex = Math.min(group.firstIndex, row.index);
-    if (!group.zoneId && row.item.assignedZoneId) group.zoneId = row.item.assignedZoneId;
+    group.zoneIds = unique([...group.zoneIds, ...getItemZoneIds(row.item)]);
     groups.set(row.item.dropoffLocation, group);
   });
   return [...groups.values()];
@@ -220,13 +220,15 @@ function getCombinations(items, size, limit, start = 0, prefix = [], output = []
   return output;
 }
 
-function canAddDestination(rows, destination, zoneId, zoneLimit) {
+function canAddDestination(rows, destination, zoneIds, zoneLimit) {
   const onboard = getOnboardDestinationDetails(rows);
   if (onboard.destinations.has(destination)) return true;
   if (zoneLimit > 0 && onboard.zoneSlots >= zoneLimit) return false;
-  if (!zoneId) return true;
-  const occupiedBy = onboard.zones.get(zoneId);
-  return !occupiedBy || occupiedBy === destination;
+  if (!zoneIds.length) return true;
+  return zoneIds.every((zoneId) => {
+    const occupiedBy = onboard.zones.get(zoneId);
+    return !occupiedBy || occupiedBy === destination;
+  });
 }
 
 function canLoadGroups(rows, groups, zoneLimit) {
@@ -241,10 +243,13 @@ function canLoadGroups(rows, groups, zoneLimit) {
       destinations.add(group.destination);
       zoneSlots += 1;
     }
-    if (!group.zoneId) return true;
-    const occupiedBy = zones.get(group.zoneId);
-    if (occupiedBy && occupiedBy !== group.destination) return false;
-    zones.set(group.zoneId, group.destination);
+    if (!group.zoneIds.length) return true;
+    const hasConflict = group.zoneIds.some((zoneId) => {
+      const occupiedBy = zones.get(zoneId);
+      return occupiedBy && occupiedBy !== group.destination;
+    });
+    if (hasConflict) return false;
+    group.zoneIds.forEach((zoneId) => zones.set(zoneId, group.destination));
     return true;
   });
 }
@@ -269,7 +274,7 @@ function buildRouteStopFromRows(session, location, beforeRows, afterRows, unload
     statusLabel,
     lines: allRows.length,
     commodities: unique(allRows.map((row) => row.item.commodity)),
-    zones: unique(allRows.map((row) => config.zoneName(session, row.item.assignedZoneId)).filter((zone) => zone !== "Unassigned")),
+    zones: unique(allRows.flatMap((row) => getItemZoneIds(row.item).map((zoneId) => config.zoneName(session, zoneId))).filter((zone) => zone !== "Unassigned")),
     unloadScu,
     loadScu,
     workScu: unloadScu + loadScu,
@@ -369,9 +374,7 @@ function getOnboardDestinationDetails(rows, zoneCapacityScu = 0) {
     const onboardScu = row.item.loadedScu - row.item.unloadedScu;
     destinations.add(row.item.dropoffLocation);
     scuByDestination.set(row.item.dropoffLocation, (scuByDestination.get(row.item.dropoffLocation) ?? 0) + onboardScu);
-    if (row.item.assignedZoneId) {
-      zones.set(row.item.assignedZoneId, row.item.dropoffLocation);
-    }
+    getItemZoneIds(row.item).forEach((zoneId) => zones.set(zoneId, row.item.dropoffLocation));
   });
   const zoneSlots = zoneCapacityScu > 0
     ? [...scuByDestination.values()].reduce((total, scu) => total + Math.max(1, Math.ceil(scu / zoneCapacityScu)), 0)
@@ -432,6 +435,11 @@ function getZoneLimit(session) {
 function getZoneCapacityScu(capacityScu, zoneLimit) {
   if (capacityScu <= 0 || zoneLimit <= 0) return 0;
   return capacityScu / zoneLimit;
+}
+
+function getItemZoneIds(item) {
+  const values = Array.isArray(item.assignedZoneIds) ? item.assignedZoneIds : [item.assignedZoneId];
+  return unique(values.filter(Boolean));
 }
 
 function getFirstLocationIndex(rows, location) {
