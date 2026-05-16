@@ -369,17 +369,26 @@ function getOnboardDestinationDetails(rows, zoneCapacityScu = 0) {
   const destinations = new Set();
   const zones = new Map();
   const scuByDestination = new Map();
+  const zonesByDestination = new Map();
   rows.forEach((row) => {
     if (row.item.loadedScu <= row.item.unloadedScu) return;
     const onboardScu = row.item.loadedScu - row.item.unloadedScu;
     destinations.add(row.item.dropoffLocation);
     scuByDestination.set(row.item.dropoffLocation, (scuByDestination.get(row.item.dropoffLocation) ?? 0) + onboardScu);
-    getItemZoneIds(row.item).forEach((zoneId) => zones.set(zoneId, row.item.dropoffLocation));
+    getItemZoneIds(row.item).forEach((zoneId) => {
+      zones.set(zoneId, row.item.dropoffLocation);
+      const destinationZones = zonesByDestination.get(row.item.dropoffLocation) ?? new Set();
+      destinationZones.add(zoneId);
+      zonesByDestination.set(row.item.dropoffLocation, destinationZones);
+    });
   });
   const zoneSlots = zoneCapacityScu > 0
-    ? [...scuByDestination.values()].reduce((total, scu) => total + Math.max(1, Math.ceil(scu / zoneCapacityScu)), 0)
+    ? [...scuByDestination.entries()].reduce((total, [destination, scu]) => {
+      const assignedSlots = zonesByDestination.get(destination)?.size ?? 0;
+      return total + Math.max(assignedSlots, Math.ceil(scu / zoneCapacityScu), 1);
+    }, 0)
     : destinations.size;
-  return { destinations, zones, scuByDestination, zoneSlots };
+  return { destinations, zones, scuByDestination, zonesByDestination, zoneSlots };
 }
 
 function hasZoneLimitedLoads(beforeRows, afterRows, location, zoneLimit) {

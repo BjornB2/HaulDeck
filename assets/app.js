@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=44";
+import { getRouteChecklist } from "./route-planner.js?v=45";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -766,7 +766,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v44",
+    appVersion: "hauldeck-v45",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -1066,15 +1066,11 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
   const zoneLoads = destinationZoneLoads.get(destination) ?? new Map();
   const selected = [];
   let remainingScu = scu;
-  const reusableZones = unique([...preferredZoneIds, ...zoneLoads.keys()])
-    .filter((zoneId) => !zoneAssignments.has(zoneId) || zoneAssignments.get(zoneId) === destination);
+  const reusableZones = preferredZoneIds.filter((zoneId) => !zoneAssignments.has(zoneId));
 
   reusableZones.forEach((zoneId) => {
     if (remainingScu <= 0) return;
-    const usedScu = zoneLoads.get(zoneId) ?? 0;
-    const roomScu = targetScu > 0 ? Math.max(0, targetScu - usedScu) : remainingScu;
-    if (roomScu <= 0) return;
-    const placedScu = Math.min(remainingScu, roomScu);
+    const placedScu = targetScu > 0 ? Math.min(remainingScu, targetScu) : remainingScu;
     addZoneLoad(destinationZoneLoads, zoneAssignments, destination, zoneId, placedScu);
     selected.push(zoneId);
     remainingScu -= placedScu;
@@ -1089,10 +1085,21 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
     remainingScu -= placedScu;
   }
 
-  if (remainingScu > 0 && zoneLoads.size) {
-    const fallback = [...zoneLoads.keys()][0];
-    addZoneLoad(destinationZoneLoads, zoneAssignments, destination, fallback, remainingScu);
-    selected.push(fallback);
+  const fallbackZones = [...zoneLoads.keys()].filter((zoneId) => zoneAssignments.get(zoneId) === destination);
+  fallbackZones.forEach((zoneId) => {
+    if (remainingScu <= 0) return;
+    const usedScu = zoneLoads.get(zoneId) ?? 0;
+    const roomScu = targetScu > 0 ? Math.max(0, targetScu - usedScu) : remainingScu;
+    if (roomScu <= 0) return;
+    const placedScu = Math.min(remainingScu, roomScu);
+    addZoneLoad(destinationZoneLoads, zoneAssignments, destination, zoneId, placedScu);
+    selected.push(zoneId);
+    remainingScu -= placedScu;
+  });
+
+  if (remainingScu > 0 && fallbackZones.length) {
+    addZoneLoad(destinationZoneLoads, zoneAssignments, destination, fallbackZones[0], remainingScu);
+    selected.push(fallbackZones[0]);
   }
 
   return unique(selected);
