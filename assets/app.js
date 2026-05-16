@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=45";
+import { getRouteChecklist } from "./route-planner.js?v=46";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -766,7 +766,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v45",
+    appVersion: "hauldeck-v46",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -1006,6 +1006,7 @@ function autoAssignZones(session, options = {}) {
   const { touch = true } = options;
   const destinationZoneLoads = new Map();
   const zoneAssignments = new Map();
+  const onboardZoneIdsByDestination = new Map();
   const usedZones = new Set();
   const targetScu = getZoneTargetScu(session);
   const contracts = session.contracts;
@@ -1016,10 +1017,10 @@ function autoAssignZones(session, options = {}) {
       const isActiveCargo = contract.status !== "cancelled" && item.unloadedScu < item.quantityScu;
       if (!isActiveCargo) return item;
       if (item.loadedScu > 0) {
-        getItemZoneIds(item).forEach((zoneId) => addZoneLoad(destinationZoneLoads, zoneAssignments, item.dropoffLocation, zoneId, getRemainingItemScu(item)));
+        addItemZoneLoads(destinationZoneLoads, zoneAssignments, onboardZoneIdsByDestination, item, item.loadedScu - item.unloadedScu, targetScu);
         return item;
       }
-      const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, getItemZoneIds(item));
+      const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, getItemZoneIds(item), onboardZoneIdsByDestination);
       return zoneIds.length ? { ...item, assignedZoneId: zoneIds[0], assignedZoneIds: zoneIds } : item;
     }),
   }));
@@ -1029,6 +1030,7 @@ function autoAssignZones(session, options = {}) {
 function autoAssignZonesForLocation(session, location) {
   const destinationZoneLoads = new Map();
   const zoneAssignments = new Map();
+  const onboardZoneIdsByDestination = new Map();
   const usedZones = new Set();
   const targetScu = getZoneTargetScu(session);
   const activeContracts = session.contracts.filter((contract) => contract.status !== "cancelled");
@@ -1038,10 +1040,8 @@ function autoAssignZonesForLocation(session, location) {
       const unloadsHereFirst = item.dropoffLocation === location && item.loadedScu > item.unloadedScu;
       const isOnboard = item.loadedScu > item.unloadedScu && !unloadsHereFirst;
       if (!isOnboard) return;
-      getItemZoneIds(item).forEach((zoneId) => {
-        usedZones.add(zoneId);
-        addZoneLoad(destinationZoneLoads, zoneAssignments, item.dropoffLocation, zoneId, getRemainingItemScu(item));
-      });
+      getItemZoneIds(item).forEach((zoneId) => usedZones.add(zoneId));
+      addItemZoneLoads(destinationZoneLoads, zoneAssignments, onboardZoneIdsByDestination, item, item.loadedScu - item.unloadedScu, targetScu);
     });
   });
 
@@ -1053,7 +1053,7 @@ function autoAssignZonesForLocation(session, location) {
       items: contract.items.map((item) => {
         if (item.loadedScu >= item.quantityScu) return item;
         if (item.loadedScu > 0) return item;
-        const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, getItemZoneIds(item));
+        const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, getItemZoneIds(item), onboardZoneIdsByDestination);
         return zoneIds.length ? { ...item, assignedZoneId: zoneIds[0], assignedZoneIds: zoneIds } : item;
       }),
     });
@@ -1062,10 +1062,26 @@ function autoAssignZonesForLocation(session, location) {
   return { ...session, contracts, updatedAt: new Date().toISOString() };
 }
 
-function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, destination, scu, targetScu, preferredZoneIds = []) {
+function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, destination, scu, targetScu, preferredZoneIds = [], onboardZoneIdsByDestination = new Map()) {
   const zoneLoads = destinationZoneLoads.get(destination) ?? new Map();
   const selected = [];
   let remainingScu = scu;
+  const onboardZoneIds = onboardZoneIdsByDestination.get(destination) ?? [];
+  const onboardZones = unique([...preferredZoneIds.filter((zoneId) => onboardZoneIds.includes(zoneId)), ...onboardZoneIds]);
+
+  if (onboardZones.length) {
+    onboardZones.forEach((zoneId) => {
+      if (remainingScu <= 0) return;
+      const usedScu = zoneLoads.get(zoneId) ?? 0;
+      const roomScu = targetScu > 0 ? Math.max(0, targetScu - usedScu) : remainingScu;
+      if (roomScu <= 0) return;
+      const placedScu = Math.min(remainingScu, roomScu);
+      addZoneLoad(destinationZoneLoads, zoneAssignments, destination, zoneId, placedScu);
+      selected.push(zoneId);
+      remainingScu -= placedScu;
+    });
+  }
+
   const reusableZones = preferredZoneIds.filter((zoneId) => !zoneAssignments.has(zoneId));
 
   reusableZones.forEach((zoneId) => {
@@ -1103,6 +1119,27 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
   }
 
   return unique(selected);
+}
+
+function addDestinationZone(map, destination, zoneId) {
+  const zoneIds = map.get(destination) ?? [];
+  if (!zoneIds.includes(zoneId)) zoneIds.push(zoneId);
+  map.set(destination, zoneIds);
+}
+
+function addItemZoneLoads(destinationZoneLoads, zoneAssignments, onboardZoneIdsByDestination, item, scu, targetScu) {
+  let remainingScu = Math.max(0, scu);
+  const zoneIds = getItemZoneIds(item);
+  zoneIds.forEach((zoneId) => {
+    addDestinationZone(onboardZoneIdsByDestination, item.dropoffLocation, zoneId);
+    if (remainingScu <= 0) {
+      addZoneLoad(destinationZoneLoads, zoneAssignments, item.dropoffLocation, zoneId, 0);
+      return;
+    }
+    const placedScu = targetScu > 0 ? Math.min(remainingScu, targetScu) : remainingScu;
+    addZoneLoad(destinationZoneLoads, zoneAssignments, item.dropoffLocation, zoneId, placedScu);
+    remainingScu -= placedScu;
+  });
 }
 
 function takeAvailableZone(availableZones, zoneAssignments, destination, preferredZoneIds = []) {
