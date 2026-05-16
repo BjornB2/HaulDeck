@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=46";
+import { getRouteChecklist } from "./route-planner.js?v=47";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -766,7 +766,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v46",
+    appVersion: "hauldeck-v47",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -1070,6 +1070,7 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
   const onboardZones = unique([...preferredZoneIds.filter((zoneId) => onboardZoneIds.includes(zoneId)), ...onboardZoneIds]);
 
   if (onboardZones.length) {
+    selected.push(...onboardZones);
     onboardZones.forEach((zoneId) => {
       if (remainingScu <= 0) return;
       const usedScu = zoneLoads.get(zoneId) ?? 0;
@@ -1077,7 +1078,6 @@ function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availa
       if (roomScu <= 0) return;
       const placedScu = Math.min(remainingScu, roomScu);
       addZoneLoad(destinationZoneLoads, zoneAssignments, destination, zoneId, placedScu);
-      selected.push(zoneId);
       remainingScu -= placedScu;
     });
   }
@@ -1130,8 +1130,10 @@ function addDestinationZone(map, destination, zoneId) {
 function addItemZoneLoads(destinationZoneLoads, zoneAssignments, onboardZoneIdsByDestination, item, scu, targetScu) {
   let remainingScu = Math.max(0, scu);
   const zoneIds = getItemZoneIds(item);
+  if (zoneIds.length > 1) {
+    zoneIds.forEach((zoneId) => addDestinationZone(onboardZoneIdsByDestination, item.dropoffLocation, zoneId));
+  }
   zoneIds.forEach((zoneId) => {
-    addDestinationZone(onboardZoneIdsByDestination, item.dropoffLocation, zoneId);
     if (remainingScu <= 0) {
       addZoneLoad(destinationZoneLoads, zoneAssignments, item.dropoffLocation, zoneId, 0);
       return;
