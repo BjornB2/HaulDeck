@@ -1,4 +1,5 @@
 const JUMP_PENALTY = 1800;
+const ROUTE_BEAM_WIDTH = 180;
 
 export function getRouteChecklist(session, options = {}) {
   const {
@@ -16,43 +17,162 @@ export function getRouteChecklist(session, options = {}) {
       pickupLocation: contract.pickupLocation,
       item: { ...item },
     }));
-  const stops = [];
-  const visited = new Set();
-  const deferredLocations = new Set();
-  const capacityScu = getShipCapacityScu(session);
-  let current = rows.length ? startLocation || findFirstWorkLocation(rows) : "";
-
-  for (let guard = 0; guard < rows.length * 20 + 50 && current; guard += 1) {
-    const onboardBeforeScu = getSimulatedOnboardScu(rows);
-    const isForcedCurrentStop = forceStartStop && guard === 0 && current === startLocation;
-    const wasDeferredWithoutProgress = deferredLocations.has(current);
-    const canDeferCurrentStop = !isForcedCurrentStop && !wasDeferredWithoutProgress;
-    const shouldDeferLoad = canDeferCurrentStop && shouldDeferConstrainedPickup(current, rows, capacityScu, onboardBeforeScu);
-    const shouldDeferUnload = canDeferCurrentStop && !shouldDeferLoad && shouldDeferSplitDelivery(current, rows, capacityScu, onboardBeforeScu);
-    const shouldDeferStop = shouldDeferLoad || shouldDeferUnload;
-    const stop = shouldDeferStop ? null : buildRouteStop(session, current, rows, onboardBeforeScu, zoneName, zoneLimit);
-    const changed = shouldDeferStop ? false : applyRouteStop(current, rows, capacityScu, zoneLimit);
-
-    if (stop && stop.workScu > 0) {
-      stops.push(stop);
-    }
-
-    if (changed) {
-      deferredLocations.clear();
-    } else if (shouldDeferStop) {
-      deferredLocations.add(current);
-    }
-
-    visited.add(current);
-    const next = chooseNextRouteLocation(rows, current, visited, capacityScu, zoneLimit, getLocationSystem);
-    if (!changed && !next) break;
-    current = next;
-  }
+  const stops = findOptimizedRouteStops(session, rows, {
+    startLocation,
+    zoneName,
+    zoneLimit,
+    getLocationSystem,
+    forceStartStop,
+  });
 
   return stops.map((stop, index) => ({
     ...stop,
     sequence: index + 1,
   }));
+}
+
+function findOptimizedRouteStops(session, rows, options) {
+  const {
+    startLocation,
+    zoneName,
+    zoneLimit,
+    getLocationSystem,
+    forceStartStop,
+  } = options;
+  const capacityScu = getShipCapacityScu(session);
+  const start = rows.length ? startLocation || findFirstWorkLocation(rows) : "";
+  if (!start) return [];
+
+  const initialState = {
+    rows: cloneRows(rows),
+    current: start,
+    stops: [],
+    cost: 0,
+    visitCounts: new Map(),
+  };
+  const completed = [];
+  let beam = [initialState];
+  const maxDepth = rows.length * 4 + 24;
+
+  for (let depth = 0; depth < maxDepth && beam.length; depth += 1) {
+    const nextStates = [];
+    const bestByKey = new Map();
+
+    beam.forEach((state) => {
+      if (isRouteComplete(state.rows)) {
+        completed.push(state);
+        return;
+      }
+
+      getSearchCandidateLocations(session, state, {
+        capacityScu,
+        zoneLimit,
+        zoneName,
+        getLocationSystem,
+        forceStartStop,
+      }).forEach((location) => {
+        const onboardBeforeScu = getSimulatedOnboardScu(state.rows);
+        const stop = buildRouteStop(session, location, state.rows, onboardBeforeScu, zoneName, zoneLimit);
+        if (!stop || stop.workScu <= 0) return;
+
+        const nextRows = cloneRows(state.rows);
+        if (!applyRouteStop(location, nextRows, capacityScu, zoneLimit)) return;
+
+        const visitCounts = new Map(state.visitCounts);
+        const previousVisits = visitCounts.get(location) ?? 0;
+        visitCounts.set(location, previousVisits + 1);
+        const nextState = {
+          rows: nextRows,
+          current: location,
+          stops: [...state.stops, stop],
+          cost: state.cost + getTransitionCost(state, stop, location, getLocationSystem),
+          visitCounts,
+        };
+        const key = getRouteStateKey(nextState);
+        const existing = bestByKey.get(key);
+        if (!existing || getStateRank(nextState) < getStateRank(existing)) {
+          bestByKey.set(key, nextState);
+        }
+      });
+    });
+
+    nextStates.push(...bestByKey.values());
+    if (!nextStates.length) break;
+    beam = nextStates
+      .sort((a, b) => getStateRank(a) - getStateRank(b))
+      .slice(0, ROUTE_BEAM_WIDTH);
+  }
+
+  const candidates = completed.length ? completed : beam;
+  return candidates
+    .sort((a, b) => getFinalStateCost(a) - getFinalStateCost(b))[0]?.stops ?? [];
+}
+
+function getSearchCandidateLocations(session, state, options) {
+  const {
+    capacityScu,
+    zoneLimit,
+    zoneName,
+    getLocationSystem,
+    forceStartStop,
+  } = options;
+  const onboardBeforeScu = getSimulatedOnboardScu(state.rows);
+  const currentStop = buildRouteStop(session, state.current, state.rows, onboardBeforeScu, zoneName, zoneLimit);
+  if (forceStartStop && !state.stops.length && currentStop?.workScu > 0) return [state.current];
+
+  const candidates = new Set();
+  if (currentStop?.workScu > 0) candidates.add(state.current);
+  getRouteCandidateLocations(state.rows, state.current).forEach((location) => candidates.add(location));
+
+  return [...candidates]
+    .map((location) => scoreRouteCandidate(state.rows, state.current, new Set(state.visitCounts.keys()), location, capacityScu, zoneLimit, getLocationSystem))
+    .sort((a, b) => b.score - a.score || a.firstIndex - b.firstIndex)
+    .map((candidate) => candidate.location);
+}
+
+function getTransitionCost(state, stop, location, getLocationSystem) {
+  const previousVisits = state.visitCounts.get(location) ?? 0;
+  const fullLoadScu = getRemainingLoadScu(state.rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu));
+  const unplannedLoadScu = Math.max(0, fullLoadScu - stop.loadScu);
+  const crossesSystem = getLocationSystem(state.current) && getLocationSystem(location) && getLocationSystem(state.current) !== getLocationSystem(location);
+
+  let cost = 1000;
+  cost += previousVisits * 2400;
+  cost += unplannedLoadScu ? 900 + unplannedLoadScu * 18 : 0;
+  cost += stop.zoneLimited ? 1400 : 0;
+  cost += stop.onboardAfterScu * 2;
+  cost += stop.onboardDestinationsAfter * 45;
+  cost += crossesSystem ? JUMP_PENALTY : 0;
+  cost -= stop.unloadScu * 4;
+  return cost;
+}
+
+function getStateRank(state) {
+  return getFinalStateCost(state) + getRemainingWorkScu(state.rows) * 8;
+}
+
+function getFinalStateCost(state) {
+  const revisitPenalty = [...state.visitCounts.values()].reduce((total, count) => total + Math.max(0, count - 1) * 1800, 0);
+  return state.cost + state.stops.length * 80 + revisitPenalty + getRemainingWorkScu(state.rows) * 25;
+}
+
+function getRouteStateKey(state) {
+  return `${state.current}|${state.rows.map((row) => `${row.item.loadedScu}/${row.item.unloadedScu}`).join(",")}`;
+}
+
+function cloneRows(rows) {
+  return rows.map((row) => ({
+    ...row,
+    item: { ...row.item },
+  }));
+}
+
+function isRouteComplete(rows) {
+  return rows.every((row) => row.item.unloadedScu >= row.item.quantityScu);
+}
+
+function getRemainingWorkScu(rows) {
+  return rows.reduce((total, row) => total + (row.item.quantityScu - row.item.unloadedScu), 0);
 }
 
 function allCargo(session) {
