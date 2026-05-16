@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=41";
+import { getRouteChecklist } from "./route-planner.js?v=42";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -494,21 +494,28 @@ function renderActionsMode(session) {
         ${unloadGroups.map((group) => renderUnloadZoneGroup(session, group)).join("")}
       </section>
     ` : actionLocation ? `<section class="empty-state compact-empty"><h2>No unload here</h2><p>Nothing loaded is due at this location.</p></section>` : ""}
-    ${groups.length ? renderCargoElevatorHint() : ""}
-    ${groups.length ? groups.map(({ contract, rows }, index) => `
-      <section class="stack action-contract-group">
-        <div class="contract-group-heading">
-          <div>
-            <p class="eyebrow">Load contract ${index + 1}</p>
-            <h3>${escapeHtml(contract.contractName || `${contract.pickupLocation} pickup`)}</h3>
-          </div>
-          <span class="pill contract-scu-pill">${getRemainingScu(rows)} SCU</span>
-          <p class="muted wide-row">${escapeHtml(contract.pickupLocation)} -> ${escapeHtml(unique(rows.map((row) => row.item.dropoffLocation)).join(", "))}</p>
-          <p class="contract-commodity-summary wide-row">${escapeHtml(formatCommodityTotals(rows))}</p>
-        </div>
-        ${rows.map((row) => renderProgressCard(session, row.contract, row.item, "load")).join("")}
+    ${groups.length ? `
+      <section class="stack load-section">
+        <h3 class="section-title">Load here</h3>
+        ${renderCargoElevatorHint()}
+        ${groups.map(({ contract, rows }, index) => `
+          <section class="action-contract-group">
+            <div class="contract-group-heading">
+              <div>
+                <p class="eyebrow">Load contract ${index + 1}</p>
+                <h3>${escapeHtml(contract.contractName || `${contract.pickupLocation} pickup`)}</h3>
+              </div>
+              <span class="pill contract-scu-pill">${getRemainingScu(rows)} SCU</span>
+              <p class="muted wide-row">${escapeHtml(contract.pickupLocation)} -> ${escapeHtml(unique(rows.map((row) => row.item.dropoffLocation)).join(", "))}</p>
+              <p class="contract-commodity-summary wide-row">${escapeHtml(formatCommodityTotals(rows))}</p>
+            </div>
+            <div class="contract-group-body">
+              ${rows.map((row) => renderProgressCard(session, row.contract, row.item, "load")).join("")}
+            </div>
+          </section>
+        `).join("")}
       </section>
-    `).join("") : `<section class="empty-state compact-empty"><h2>No load here</h2><p>${actionLocation ? "Nothing needs to be picked up at this location." : "Select a stop from the stop plan."}</p></section>`}
+    ` : `<section class="empty-state compact-empty"><h2>No load here</h2><p>${actionLocation ? "Nothing needs to be picked up at this location." : "Select a stop from the stop plan."}</p></section>`}
   `;
 }
 
@@ -749,7 +756,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v41",
+    appVersion: "hauldeck-v42",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
