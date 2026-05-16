@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=48";
+import { getRouteChecklist } from "./route-planner.js?v=49";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -766,7 +766,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v48",
+    appVersion: "hauldeck-v49",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -1010,18 +1010,33 @@ function autoAssignZones(session, options = {}) {
   const usedZones = new Set();
   const targetScu = getZoneTargetScu(session);
   const contracts = session.contracts;
+  const plannedZoneIdsByItem = new Map();
   const availableZones = session.zones.filter((zone) => !usedZones.has(zone.id));
+
+  contracts.forEach((contract) => {
+    contract.items.forEach((item) => {
+      const isActiveCargo = contract.status !== "cancelled" && item.unloadedScu < item.quantityScu;
+      if (!isActiveCargo) return;
+      if (item.loadedScu > 0) {
+        addItemZoneLoads(destinationZoneLoads, zoneAssignments, onboardZoneIdsByDestination, item, item.loadedScu - item.unloadedScu, targetScu);
+      }
+    });
+  });
+
+  groupAssignableItems(contracts, (contract, item) =>
+    contract.status !== "cancelled" &&
+    item.unloadedScu < item.quantityScu &&
+    item.loadedScu <= 0
+  ).forEach((group) => {
+    const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, group.destination, group.scu, targetScu, group.preferredZoneIds, onboardZoneIdsByDestination);
+    group.items.forEach((item) => plannedZoneIdsByItem.set(item.id, zoneIds));
+  });
+
   const assignedContracts = contracts.map((contract) => normalizeContract({
     ...contract,
     items: contract.items.map((item) => {
-      const isActiveCargo = contract.status !== "cancelled" && item.unloadedScu < item.quantityScu;
-      if (!isActiveCargo) return item;
-      if (item.loadedScu > 0) {
-        addItemZoneLoads(destinationZoneLoads, zoneAssignments, onboardZoneIdsByDestination, item, item.loadedScu - item.unloadedScu, targetScu);
-        return item;
-      }
-      const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, getItemZoneIds(item), onboardZoneIdsByDestination);
-      return zoneIds.length ? { ...item, assignedZoneId: zoneIds[0], assignedZoneIds: zoneIds } : item;
+      const zoneIds = plannedZoneIdsByItem.get(item.id);
+      return zoneIds?.length ? { ...item, assignedZoneId: zoneIds[0], assignedZoneIds: zoneIds } : item;
     }),
   }));
   return { ...session, contracts: assignedContracts, updatedAt: touch ? new Date().toISOString() : session.updatedAt };
@@ -1046,6 +1061,16 @@ function autoAssignZonesForLocation(session, location) {
   });
 
   const availableZones = session.zones.filter((zone) => !usedZones.has(zone.id));
+  const plannedZoneIdsByItem = new Map();
+  groupAssignableItems(activeContracts, (contract, item) =>
+    contract.pickupLocation === location &&
+    item.loadedScu < item.quantityScu &&
+    item.loadedScu <= 0
+  ).forEach((group) => {
+    const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, group.destination, group.scu, targetScu, group.preferredZoneIds, onboardZoneIdsByDestination);
+    group.items.forEach((item) => plannedZoneIdsByItem.set(item.id, zoneIds));
+  });
+
   const contracts = session.contracts.map((contract) => {
     if (contract.status === "cancelled" || contract.pickupLocation !== location) return contract;
     return normalizeContract({
@@ -1053,13 +1078,33 @@ function autoAssignZonesForLocation(session, location) {
       items: contract.items.map((item) => {
         if (item.loadedScu >= item.quantityScu) return item;
         if (item.loadedScu > 0) return item;
-        const zoneIds = chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, item.dropoffLocation, getRemainingItemScu(item), targetScu, getItemZoneIds(item), onboardZoneIdsByDestination);
+        const zoneIds = plannedZoneIdsByItem.get(item.id) ?? [];
         return zoneIds.length ? { ...item, assignedZoneId: zoneIds[0], assignedZoneIds: zoneIds } : item;
       }),
     });
   });
 
   return { ...session, contracts, updatedAt: new Date().toISOString() };
+}
+
+function groupAssignableItems(contracts, predicate) {
+  const groups = new Map();
+  contracts.forEach((contract) => {
+    contract.items.forEach((item) => {
+      if (!predicate(contract, item)) return;
+      const group = groups.get(item.dropoffLocation) ?? {
+        destination: item.dropoffLocation,
+        items: [],
+        scu: 0,
+        preferredZoneIds: [],
+      };
+      group.items.push(item);
+      group.scu += getRemainingItemScu(item);
+      group.preferredZoneIds = unique([...group.preferredZoneIds, ...getItemZoneIds(item)]);
+      groups.set(item.dropoffLocation, group);
+    });
+  });
+  return [...groups.values()];
 }
 
 function chooseZonesForDestination(destinationZoneLoads, zoneAssignments, availableZones, destination, scu, targetScu, preferredZoneIds = [], onboardZoneIdsByDestination = new Map()) {
@@ -1178,12 +1223,6 @@ function getWarnings(session) {
   if (unassigned.length) warnings.push({ level: "warning", message: `${unassigned.length} cargo line${unassigned.length === 1 ? "" : "s"} have unassigned cargo.` });
   const zoneLimitedStops = getRouteChecklist(session, { startLocation: getRouteOrigin(session), zoneName, getLocationSystem, forceStartStop: true }).filter((stop) => stop.zoneLimited);
   if (zoneLimitedStops.length) warnings.push({ level: "info", message: `Route adjusted for ${session.zones.length} cargo zones. Add one more cargo zone for further optimized routing for this trip.` });
-  getDestinationSummaries(session).forEach((destination) => {
-    const zones = destination.zones.filter((zone) => zone !== "Unassigned");
-    if (zones.length > 1) {
-      warnings.push({ level: "warning", message: `${destination.name} is assigned to multiple zones. Keep one destination in one zone where possible.` });
-    }
-  });
   return warnings;
 }
 
