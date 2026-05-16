@@ -26,6 +26,8 @@ HaulDeck was built with AI assistance. The code, UI iterations, route planner lo
 - Groups loading actions per contract so station inventory totals are easier to match
 - Groups unloading actions per ship zone so the main instruction is the physical zone to clear
 - Uses color-coded zones across loading, unloading, contracts, and zone settings
+- Splits large destination stacks across multiple zones when they exceed roughly one quarter of ship capacity
+- Keeps cargo for the same destination in the same zone group across later pickups when possible
 - Collapses delivered contracts under completed contracts
 - Stores runs locally in the browser with IndexedDB
 - Runs as a static PWA with no build step
@@ -82,6 +84,8 @@ HaulDeck assumes a zone should normally hold cargo for one destination. Zones ar
 
 The default layout is four zones: `Left Front`, `Right Front`, `Left Rear`, and `Right Rear`. You can rename them in the `Zones` screen.
 
+When a destination needs more than roughly one quarter of the configured ship capacity, HaulDeck may assign that destination to multiple zones. Later cargo for that same destination should reuse that merged zone group until the destination is unloaded.
+
 ## Catalog Data
 
 HaulDeck includes local JSON catalogs for:
@@ -126,6 +130,28 @@ No npm install, build step, or server-side runtime is required.
 - Catalog data lives in `public/data/locations.json` and `public/data/commodities.json`.
 - Installed PWA versions may cache aggressively on iOS; reopening through Safari can help pick up a fresh service worker after updates.
 
+## Changelog
+
+### Current MVP
+
+- Added multi-line contracts, with shared pickup and per-line commodity, SCU, destination, and zone.
+- Added route planning that accounts for ship SCU capacity, cargo zones, current route location, and high penalties for inter-system jumps.
+- Added Stanton, Pyro, and Nyx location catalogs with normalized station names.
+- Added mobile-friendly custom dropdowns for iPhone/PWA usage.
+- Added loading and unloading action screens, with loading grouped by contract and unloading grouped by ship zone.
+- Added undo for load/unload actions, debug export, and an in-app cache refresh helper.
+- Added color-coded cargo zones and support for merged destination zone groups.
+
+## Todo
+
+- Support contracts with multiple pickup locations. Current contracts assume one pickup location with multiple destination lines.
+- Add real distance or travel-time data when a reliable source is available, so route planning can optimize more than stops and jumps.
+- Add ship presets for common cargo ships, including default SCU capacity and suggested zone layouts.
+- Add a small built-in route test suite for tricky planner cases, especially merged zones, partial progress, skipped stops, and multi-system hauls.
+- Improve catalog maintenance with easier validation for missing commodities and cargo locations.
+- Add optional backup/import for full local data, separate from the current debug export.
+- Consider route lock/history controls for runs already in progress, so deliberate pilot deviations are clearer.
+
 ## Project Structure
 
 ```text
@@ -149,4 +175,4 @@ No npm install, build step, or server-side runtime is required.
 
 ## Status
 
-HaulDeck is a working MVP. The main remaining improvements are real route distances, more catalog validation, more practical data from live hauling runs, and ship presets.
+HaulDeck is a working MVP. The biggest known limitation is that each contract currently has one pickup location. The planner and zone model are still being refined with real hauling runs.
