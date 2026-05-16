@@ -1,4 +1,4 @@
-import { getRouteChecklist } from "./route-planner.js?v=39";
+import { getRouteChecklist } from "./route-planner.js?v=40";
 
 const DB_NAME = "hauldeck";
 const STORE_NAME = "app";
@@ -94,6 +94,7 @@ function updateContract(contract, draft) {
 }
 
 function createCargoItem(draft, existing) {
+  const locksZone = existing && existing.loadedScu > 0;
   return normalizeCargoItem({
     id: draft.id || existing?.id || createId("item"),
     commodity: draft.commodity.trim(),
@@ -101,7 +102,7 @@ function createCargoItem(draft, existing) {
     quantityScu: Number(draft.quantityScu),
     loadedScu: existing?.loadedScu ?? 0,
     unloadedScu: existing?.unloadedScu ?? 0,
-    assignedZoneId: clean(draft.assignedZoneId) ?? existing?.assignedZoneId,
+    assignedZoneId: locksZone ? existing.assignedZoneId : clean(draft.assignedZoneId) ?? existing?.assignedZoneId,
   });
 }
 
@@ -438,6 +439,7 @@ function renderRouteChecklist(session) {
 }
 
 function renderCargoLineEditor(session, item, index, itemCount) {
+  const zoneLocked = item.loadedScu > 0;
   return `
     <article class="cargo-line-editor" data-item-index="${index}">
       <div class="card-header">
@@ -448,10 +450,10 @@ function renderCargoLineEditor(session, item, index, itemCount) {
       ${field("Drop-off", "itemDropoffLocation", item.dropoffLocation, "locations")}
       ${field("Commodity", "itemCommodity", item.commodity, "commodities")}
       ${field("Quantity SCU", "itemQuantityScu", item.quantityScu ?? 1, "", "text", "1", "", "", "numeric")}
-      <label>Zone<select name="itemAssignedZoneId">
+      <label>Zone<select name="itemAssignedZoneId" ${zoneLocked ? "disabled" : ""}>
         <option value="">Auto assign</option>
         ${session.zones.map((zone) => `<option value="${zone.id}" ${zone.id === item.assignedZoneId ? "selected" : ""}>${escapeHtml(zone.name)}</option>`).join("")}
-      </select></label>
+      </select>${zoneLocked ? `<input type="hidden" name="itemAssignedZoneId" value="${escapeAttribute(item.assignedZoneId ?? "")}">` : ""}</label>
     </article>
   `;
 }
@@ -612,7 +614,7 @@ function renderZones(session) {
             <p class="muted">${escapeHtml(contract.pickupLocation)}</p>
             <div class="assignment-zone-current">Current ${renderZonePill(session, item.assignedZoneId, "mini")}</div>
           </div>
-          <select data-action="assign-zone" data-contract-id="${contract.id}" data-item-id="${item.id}">
+          <select data-action="assign-zone" data-contract-id="${contract.id}" data-item-id="${item.id}" ${item.loadedScu > 0 ? "disabled" : ""}>
             <option value="">Unassigned</option>
             ${session.zones.map((zone) => `<option value="${zone.id}" ${zone.id === item.assignedZoneId ? "selected" : ""}>${escapeHtml(zone.name)}</option>`).join("")}
           </select>
@@ -738,7 +740,7 @@ function createDebugExport(session) {
     app: "HaulDeck",
     exportType: "debug-run",
     exportedAt: new Date().toISOString(),
-    appVersion: "hauldeck-v39",
+    appVersion: "hauldeck-v40",
     routeOrigin,
     activeLocation: state.activeLocation,
     routePlan: getRouteChecklist(session, {
@@ -951,7 +953,10 @@ async function assignZone(contractId, itemId, zoneId) {
     ...session,
     contracts: session.contracts.map((contract) => contract.id === contractId ? normalizeContract({
       ...contract,
-      items: contract.items.map((item) => item.id === itemId ? { ...item, assignedZoneId: zoneId || undefined } : item),
+      items: contract.items.map((item) => {
+        if (item.id !== itemId || item.loadedScu > 0) return item;
+        return { ...item, assignedZoneId: zoneId || undefined };
+      }),
     }) : contract),
     updatedAt: new Date().toISOString(),
   });
@@ -976,6 +981,7 @@ function autoAssignZones(session) {
     ...contract,
     items: contract.items.map((item) => {
       if (item.assignedZoneId) return item;
+      if (item.loadedScu > 0) return item;
       const existing = destinationToZone.get(item.dropoffLocation);
       if (existing) return { ...item, assignedZoneId: existing };
       const nextZone = availableZones.shift();
@@ -1009,6 +1015,7 @@ function autoAssignZonesForLocation(session, location) {
       ...contract,
       items: contract.items.map((item) => {
         if (item.assignedZoneId || item.loadedScu >= item.quantityScu) return item;
+        if (item.loadedScu > 0) return item;
         const existing = destinationToZone.get(item.dropoffLocation);
         if (existing) return { ...item, assignedZoneId: existing };
         const nextZone = availableZones.shift();

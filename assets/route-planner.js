@@ -1,5 +1,5 @@
-const JUMP_PENALTY = 1800;
-const ROUTE_BEAM_WIDTH = 180;
+const ROUTE_BEAM_WIDTH = 240;
+const MAX_LOAD_VARIANTS = 28;
 
 export function getRouteChecklist(session, options = {}) {
   const {
@@ -8,7 +8,6 @@ export function getRouteChecklist(session, options = {}) {
     getLocationSystem = () => "",
     forceStartStop = false,
   } = options;
-  const zoneLimit = getZoneLimit(session);
   const rows = allCargo(session)
     .filter(({ contract, item }) => contract.status !== "cancelled" && item.unloadedScu < item.quantityScu)
     .map(({ contract, item }, index) => ({
@@ -20,7 +19,6 @@ export function getRouteChecklist(session, options = {}) {
   const stops = findOptimizedRouteStops(session, rows, {
     startLocation,
     zoneName,
-    zoneLimit,
     getLocationSystem,
     forceStartStop,
   });
@@ -35,28 +33,33 @@ function findOptimizedRouteStops(session, rows, options) {
   const {
     startLocation,
     zoneName,
-    zoneLimit,
     getLocationSystem,
     forceStartStop,
   } = options;
-  const capacityScu = getShipCapacityScu(session);
   const start = rows.length ? startLocation || findFirstWorkLocation(rows) : "";
   if (!start) return [];
 
+  const config = {
+    capacityScu: getShipCapacityScu(session),
+    zoneLimit: getZoneLimit(session),
+    zoneName,
+    getLocationSystem,
+  };
   const initialState = {
     rows: cloneRows(rows),
     current: start,
     stops: [],
-    cost: 0,
-    visitCounts: new Map(),
+    jumpCount: 0,
+    partialLoadCount: 0,
+    partialUnloadCount: 0,
+    tiebreaker: 0,
   };
   const completed = [];
   let beam = [initialState];
-  const maxDepth = rows.length * 4 + 24;
+  const maxDepth = rows.length * 5 + 32;
 
   for (let depth = 0; depth < maxDepth && beam.length; depth += 1) {
-    const nextStates = [];
-    const bestByKey = new Map();
+    const nextStates = new Map();
 
     beam.forEach((state) => {
       if (isRouteComplete(state.rows)) {
@@ -64,116 +67,253 @@ function findOptimizedRouteStops(session, rows, options) {
         return;
       }
 
-      getSearchCandidateLocations(session, state, {
-        capacityScu,
-        zoneLimit,
-        zoneName,
-        getLocationSystem,
-        forceStartStop,
-      }).forEach((location) => {
-        const onboardBeforeScu = getSimulatedOnboardScu(state.rows);
-        const stop = buildRouteStop(session, location, state.rows, onboardBeforeScu, zoneName, zoneLimit);
-        if (!stop || stop.workScu <= 0) return;
-
-        const nextRows = cloneRows(state.rows);
-        if (!applyRouteStop(location, nextRows, capacityScu, zoneLimit)) return;
-
-        const visitCounts = new Map(state.visitCounts);
-        const previousVisits = visitCounts.get(location) ?? 0;
-        visitCounts.set(location, previousVisits + 1);
-        const nextState = {
-          rows: nextRows,
-          current: location,
-          stops: [...state.stops, stop],
-          cost: state.cost + getTransitionCost(state, stop, location, getLocationSystem),
-          visitCounts,
-        };
-        const key = getRouteStateKey(nextState);
-        const existing = bestByKey.get(key);
-        if (!existing || getStateRank(nextState) < getStateRank(existing)) {
-          bestByKey.set(key, nextState);
-        }
+      const candidates = getCandidateLocations(state, forceStartStop);
+      candidates.forEach((location) => {
+        getStopOutcomes(session, state, location, config).forEach((outcome) => {
+          const nextState = buildNextState(state, outcome, config);
+          const key = getRouteStateKey(nextState);
+          const existing = nextStates.get(key);
+          if (!existing || compareStates(nextState, existing) < 0) {
+            nextStates.set(key, nextState);
+          }
+        });
       });
     });
 
-    nextStates.push(...bestByKey.values());
-    if (!nextStates.length) break;
-    beam = nextStates
-      .sort((a, b) => getStateRank(a) - getStateRank(b))
+    if (!nextStates.size) break;
+    beam = [...nextStates.values()]
+      .sort(compareStates)
       .slice(0, ROUTE_BEAM_WIDTH);
   }
 
   const candidates = completed.length ? completed : beam;
-  return candidates
-    .sort((a, b) => getFinalStateCost(a) - getFinalStateCost(b))[0]?.stops ?? [];
+  return candidates.sort(compareStates)[0]?.stops ?? [];
 }
 
-function getSearchCandidateLocations(session, state, options) {
-  const {
-    capacityScu,
-    zoneLimit,
-    zoneName,
-    getLocationSystem,
-    forceStartStop,
-  } = options;
-  const onboardBeforeScu = getSimulatedOnboardScu(state.rows);
-  const currentStop = buildRouteStop(session, state.current, state.rows, onboardBeforeScu, zoneName, zoneLimit);
-  if (forceStartStop && !state.stops.length && currentStop?.workScu > 0) return [state.current];
+function getCandidateLocations(state, forceStartStop) {
+  const currentHasWork = hasWorkAtLocation(state.rows, state.current);
+  if (forceStartStop && !state.stops.length && currentHasWork) return [state.current];
 
-  const candidates = new Set();
-  if (currentStop?.workScu > 0) candidates.add(state.current);
-  getRouteCandidateLocations(state.rows, state.current).forEach((location) => candidates.add(location));
-  const candidateStops = [...candidates]
-    .map((location) => ({
-      location,
-      stop: buildRouteStop(session, location, state.rows, onboardBeforeScu, zoneName, zoneLimit),
-    }))
-    .filter(({ stop }) => stop?.workScu > 0);
-  const hasAlternativeProgress = candidateStops.some(({ location, stop }) =>
-    location !== state.current &&
-    (stop.loadScu > 0 || getDeferredCargoToDestination(state.rows, location) === 0)
+  const locations = new Set();
+  if (currentHasWork) locations.add(state.current);
+  state.rows.forEach((row) => {
+    if (row.item.loadedScu > row.item.unloadedScu) locations.add(row.item.dropoffLocation);
+    if (row.item.loadedScu < row.item.quantityScu) locations.add(row.pickupLocation);
+  });
+  locations.delete("");
+  return [...locations].sort((a, b) => getFirstLocationIndex(state.rows, a) - getFirstLocationIndex(state.rows, b));
+}
+
+function getStopOutcomes(session, state, location, config) {
+  const afterUnloadRows = cloneRows(state.rows);
+  const unloadRows = afterUnloadRows.filter((row) =>
+    row.item.dropoffLocation === location &&
+    row.item.loadedScu > row.item.unloadedScu
   );
+  const unloadScu = unloadRows.reduce((total, row) => total + row.item.loadedScu - row.item.unloadedScu, 0);
+  unloadRows.forEach((row) => {
+    row.item.unloadedScu = row.item.loadedScu;
+  });
 
-  return candidateStops
-    .filter(({ stop }) => {
-      const futureCargoToSameDestination = stop.unloadScu > 0 ? getDeferredCargoToDestination(state.rows, stop.name) : 0;
-      const pureDeferredUnload = stop.unloadScu > 0 && stop.loadScu === 0 && futureCargoToSameDestination > 0;
-      return !pureDeferredUnload || !hasAlternativeProgress;
+  const loadRows = afterUnloadRows.filter((row) =>
+    row.pickupLocation === location &&
+    row.item.loadedScu < row.item.quantityScu
+  );
+  const loadVariants = getLoadVariants(loadRows, afterUnloadRows, config);
+
+  return loadVariants
+    .map((variant) => {
+      const rows = cloneRows(afterUnloadRows);
+      variant.loads.forEach((load) => {
+        rows[load.rowIndex].item.loadedScu += load.amount;
+      });
+      const loadScu = variant.loads.reduce((total, load) => total + load.amount, 0);
+      if (!unloadScu && !loadScu) return null;
+
+      const plannedLoadRows = variant.loads.map((load) => rows[load.rowIndex]);
+      const stop = buildRouteStopFromRows(session, location, state.rows, rows, unloadRows, plannedLoadRows, unloadScu, loadScu, config);
+      return {
+        location,
+        rows,
+        stop,
+        loadedAllAvailable: variant.loadedAllAvailable,
+        loadRowsCount: loadRows.length,
+      };
     })
-    .map(({ location }) => location)
-    .map((location) => scoreRouteCandidate(state.rows, state.current, new Set(state.visitCounts.keys()), location, capacityScu, zoneLimit, getLocationSystem))
-    .sort((a, b) => b.score - a.score || a.firstIndex - b.firstIndex)
-    .map((candidate) => candidate.location);
+    .filter(Boolean);
 }
 
-function getTransitionCost(state, stop, location, getLocationSystem) {
-  const previousVisits = state.visitCounts.get(location) ?? 0;
-  const fullLoadScu = getRemainingLoadScu(state.rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu));
-  const unplannedLoadScu = Math.max(0, fullLoadScu - stop.loadScu);
-  const futureCargoToSameDestination = stop.unloadScu > 0 ? getDeferredCargoToDestination(state.rows, location) : 0;
-  const smallPickupOnlyPenalty = stop.loadScu > 0 && stop.unloadScu === 0 ? Math.max(0, 64 - stop.loadScu) * 200 : 0;
-  const crossesSystem = getLocationSystem(state.current) && getLocationSystem(location) && getLocationSystem(state.current) !== getLocationSystem(location);
+function getLoadVariants(loadRows, rowsAfterUnload, config) {
+  if (!loadRows.length) return [{ loads: [], loadedAllAvailable: true }];
 
-  let cost = 1000;
-  cost += previousVisits * 2400;
-  cost += unplannedLoadScu ? 900 + unplannedLoadScu * 18 : 0;
-  cost += futureCargoToSameDestination ? 5000 + futureCargoToSameDestination * 120 : 0;
-  cost += smallPickupOnlyPenalty;
-  cost += stop.zoneLimited ? 1400 : 0;
-  cost += stop.onboardAfterScu * 2;
-  cost += stop.onboardDestinationsAfter * 45;
-  cost += crossesSystem ? JUMP_PENALTY : 0;
-  cost -= stop.unloadScu * 4;
-  return cost;
+  const capacityLeft = getCapacityLeft(rowsAfterUnload, config.capacityScu);
+  if (capacityLeft <= 0) return [{ loads: [], loadedAllAvailable: false }];
+
+  const destinationGroups = groupLoadRowsByDestination(loadRows);
+  const candidates = destinationGroups
+    .filter((group) => canAddDestination(rowsAfterUnload, group.destination, group.zoneId, config.zoneLimit))
+    .sort((a, b) => b.remainingScu - a.remainingScu || a.firstIndex - b.firstIndex);
+
+  const variants = new Map();
+  addLoadVariant(variants, [], loadRows.length === 0);
+
+  for (let size = 1; size <= candidates.length; size += 1) {
+    getCombinations(candidates, size, MAX_LOAD_VARIANTS).forEach((groups) => {
+      if (!canLoadGroups(rowsAfterUnload, groups, config.zoneLimit)) return;
+      const loads = [];
+      let availableScu = capacityLeft;
+      groups.forEach((group) => {
+        group.rows.forEach((row) => {
+          if (availableScu <= 0) return;
+          const amount = Math.min(row.item.quantityScu - row.item.loadedScu, availableScu);
+          if (amount <= 0) return;
+          loads.push({ rowIndex: row.index, amount });
+          availableScu -= amount;
+        });
+      });
+      const intendedScu = groups.reduce((total, group) => total + group.remainingScu, 0);
+      addLoadVariant(variants, loads, intendedScu <= capacityLeft);
+    });
+  }
+
+  return [...variants.values()]
+    .sort((a, b) => b.loads.reduce((total, load) => total + load.amount, 0) - a.loads.reduce((total, load) => total + load.amount, 0))
+    .slice(0, MAX_LOAD_VARIANTS);
 }
 
-function getStateRank(state) {
-  return getFinalStateCost(state) + getRemainingWorkScu(state.rows) * 8;
+function groupLoadRowsByDestination(loadRows) {
+  const groups = new Map();
+  loadRows.forEach((row) => {
+    const group = groups.get(row.item.dropoffLocation) ?? {
+      destination: row.item.dropoffLocation,
+      zoneId: row.item.assignedZoneId ?? "",
+      rows: [],
+      remainingScu: 0,
+      firstIndex: row.index,
+    };
+    group.rows.push(row);
+    group.remainingScu += row.item.quantityScu - row.item.loadedScu;
+    group.firstIndex = Math.min(group.firstIndex, row.index);
+    if (!group.zoneId && row.item.assignedZoneId) group.zoneId = row.item.assignedZoneId;
+    groups.set(row.item.dropoffLocation, group);
+  });
+  return [...groups.values()];
 }
 
-function getFinalStateCost(state) {
-  const revisitPenalty = [...state.visitCounts.values()].reduce((total, count) => total + Math.max(0, count - 1) * 1800, 0);
-  return state.cost + state.stops.length * 80 + revisitPenalty + getRemainingWorkScu(state.rows) * 25;
+function addLoadVariant(map, loads, loadedAllAvailable) {
+  const normalized = loads.filter((load) => load.amount > 0);
+  const key = normalized.map((load) => `${load.rowIndex}:${load.amount}`).join(",");
+  if (!map.has(key)) map.set(key, { loads: normalized, loadedAllAvailable });
+}
+
+function getCombinations(items, size, limit, start = 0, prefix = [], output = []) {
+  if (output.length >= limit) return output;
+  if (prefix.length === size) {
+    output.push(prefix);
+    return output;
+  }
+  for (let index = start; index < items.length && output.length < limit; index += 1) {
+    getCombinations(items, size, limit, index + 1, [...prefix, items[index]], output);
+  }
+  return output;
+}
+
+function canAddDestination(rows, destination, zoneId, zoneLimit) {
+  const onboard = getOnboardDestinationDetails(rows);
+  if (onboard.destinations.has(destination)) return true;
+  if (zoneLimit > 0 && onboard.destinations.size >= zoneLimit) return false;
+  if (!zoneId) return true;
+  const occupiedBy = onboard.zones.get(zoneId);
+  return !occupiedBy || occupiedBy === destination;
+}
+
+function canLoadGroups(rows, groups, zoneLimit) {
+  const onboard = getOnboardDestinationDetails(rows);
+  const destinations = new Set(onboard.destinations);
+  const zones = new Map(onboard.zones);
+
+  return groups.every((group) => {
+    if (!destinations.has(group.destination)) {
+      if (zoneLimit > 0 && destinations.size >= zoneLimit) return false;
+      destinations.add(group.destination);
+    }
+    if (!group.zoneId) return true;
+    const occupiedBy = zones.get(group.zoneId);
+    if (occupiedBy && occupiedBy !== group.destination) return false;
+    zones.set(group.zoneId, group.destination);
+    return true;
+  });
+}
+
+function buildRouteStopFromRows(session, location, beforeRows, afterRows, unloadRows, loadRows, unloadScu, loadScu, config) {
+  const onboardBeforeScu = getSimulatedOnboardScu(beforeRows);
+  const allRows = [...unloadRows, ...loadRows];
+  const onboardDestinationsAfter = getOnboardDestinationDetails(afterRows).destinations;
+  const statusLabel = unloadScu && loadScu ? "Unload, then load" : unloadScu ? "Unload" : "Load";
+
+  return {
+    name: location,
+    statusLabel,
+    lines: allRows.length,
+    commodities: unique(allRows.map((row) => row.item.commodity)),
+    zones: unique(allRows.map((row) => config.zoneName(session, row.item.assignedZoneId)).filter((zone) => zone !== "Unassigned")),
+    unloadScu,
+    loadScu,
+    workScu: unloadScu + loadScu,
+    onboardBeforeScu,
+    onboardAfterScu: getSimulatedOnboardScu(afterRows),
+    onboardDestinationsAfter: onboardDestinationsAfter.size,
+    zoneLimit: config.zoneLimit,
+    zoneLimited: hasZoneLimitedLoads(beforeRows, afterRows, location, config.zoneLimit),
+    capacityScu: config.capacityScu,
+    overCapacity: config.capacityScu > 0 && getSimulatedOnboardScu(afterRows) > config.capacityScu,
+    note: getRouteStopNote(loadRows),
+  };
+}
+
+function buildNextState(state, outcome, config) {
+  const jumps = didJump(state.current, outcome.location, config.getLocationSystem) ? 1 : 0;
+  const partialLoad = outcome.loadRowsCount && !outcome.loadedAllAvailable ? 1 : 0;
+  const partialUnload = hasFutureCargoToDestination(outcome.rows, outcome.location) && outcome.stop.unloadScu > 0 ? 1 : 0;
+  return {
+    rows: outcome.rows,
+    current: outcome.location,
+    stops: [...state.stops, outcome.stop],
+    jumpCount: state.jumpCount + jumps,
+    partialLoadCount: state.partialLoadCount + partialLoad,
+    partialUnloadCount: state.partialUnloadCount + partialUnload,
+    tiebreaker: state.tiebreaker + getTiebreakerCost(outcome),
+  };
+}
+
+function compareStates(a, b) {
+  return compareScore(getStateScore(a), getStateScore(b));
+}
+
+function getStateScore(state) {
+  const complete = isRouteComplete(state.rows) ? 0 : 1;
+  // Lexicographic priority: complete route, fewest stops, fewest jumps, then soft handling preferences.
+  return [
+    complete,
+    state.stops.length,
+    state.jumpCount,
+    state.partialLoadCount + state.partialUnloadCount,
+    getRemainingWorkScu(state.rows),
+    state.tiebreaker,
+  ];
+}
+
+function compareScore(a, b) {
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+function getTiebreakerCost(outcome) {
+  const combinedBonus = outcome.stop.loadScu && outcome.stop.unloadScu ? -25 : 0;
+  return outcome.stop.onboardDestinationsAfter * 8 - outcome.stop.workScu + combinedBonus;
 }
 
 function getRouteStateKey(state) {
@@ -191,254 +331,71 @@ function isRouteComplete(rows) {
   return rows.every((row) => row.item.unloadedScu >= row.item.quantityScu);
 }
 
-function getRemainingWorkScu(rows) {
-  return rows.reduce((total, row) => total + (row.item.quantityScu - row.item.unloadedScu), 0);
-}
-
 function allCargo(session) {
   return session.contracts.flatMap((contract) => contract.items.map((item) => ({ contract, item })));
 }
 
-function buildRouteStop(session, location, rows, onboardBeforeScu = 0, zoneName, zoneLimit = 0) {
-  const capacityScu = getShipCapacityScu(session);
-  const unloadRows = rows.filter((row) => row.item.dropoffLocation === location && row.item.loadedScu > row.item.unloadedScu);
-  const loadRows = rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu);
-  const unloadScu = unloadRows.reduce((total, row) => total + row.item.loadedScu - row.item.unloadedScu, 0);
-  const onboardAfterUnloadScu = Math.max(0, onboardBeforeScu - unloadScu);
-  const onboardDestinationsAfterUnload = getOnboardDestinationSet(rows, location);
-  const loadPlans = getLoadPlans(loadRows, capacityScu, onboardAfterUnloadScu, onboardDestinationsAfterUnload, zoneLimit);
-  const plannedLoadRows = loadPlans.map((plan) => plan.row);
-  const loadScu = loadPlans.reduce((total, plan) => total + plan.amount, 0);
-  const zoneLimitedRows = getZoneLimitedRows(loadRows, onboardDestinationsAfterUnload, zoneLimit);
-  if (!unloadRows.length && !plannedLoadRows.length) return null;
-
-  const allRows = [...unloadRows, ...plannedLoadRows];
-  const onboardAfterScu = onboardAfterUnloadScu + loadScu;
-  const onboardDestinationsAfter = getOnboardDestinationsAfterPlans(onboardDestinationsAfterUnload, loadPlans);
-  const statusLabel = unloadRows.length && plannedLoadRows.length ? "Unload, then load" : unloadRows.length ? "Unload" : "Load";
-
-  return {
-    name: location,
-    statusLabel,
-    lines: allRows.length,
-    commodities: unique(allRows.map((row) => row.item.commodity)),
-    zones: unique(allRows.map((row) => zoneName(session, row.item.assignedZoneId)).filter((zone) => zone !== "Unassigned")),
-    unloadScu,
-    loadScu,
-    workScu: unloadScu + loadScu,
-    onboardBeforeScu,
-    onboardAfterScu,
-    onboardDestinationsAfter: onboardDestinationsAfter.size,
-    zoneLimit,
-    zoneLimited: zoneLimitedRows.length > 0,
-    capacityScu,
-    overCapacity: capacityScu > 0 && onboardAfterScu > capacityScu,
-    note: getRouteStopNote(plannedLoadRows, zoneLimitedRows, zoneLimit),
-  };
-}
-
-function getRouteStopNote(loadRows, zoneLimitedRows = [], zoneLimit = 0) {
-  const notes = [];
-  if (loadRows.length) notes.push(`After loading here: ${unique(loadRows.map((row) => row.item.dropoffLocation)).join(", ")}.`);
-  if (zoneLimitedRows.length && zoneLimit > 0) {
-    const extraZones = unique(zoneLimitedRows.map((row) => row.item.dropoffLocation)).length;
-    notes.push(`Add ${extraZones === 1 ? "one more cargo zone" : `${extraZones} more cargo zones`} for further optimized routing for this trip.`);
-  }
-  return notes.join(" ");
-}
-
-function applyRouteStop(location, rows, capacityScu = 0, zoneLimit = 0) {
-  let changed = false;
-  rows.forEach((row) => {
-    if (row.item.dropoffLocation === location && row.item.loadedScu > row.item.unloadedScu) {
-      row.item.unloadedScu = row.item.loadedScu;
-      changed = true;
-    }
-  });
-  let availableScu = capacityScu > 0 ? Math.max(0, capacityScu - getSimulatedOnboardScu(rows)) : Infinity;
-  const onboardDestinations = getOnboardDestinationSet(rows);
-  rows.forEach((row) => {
-    if (row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu) {
-      if (!canLoadDestination(onboardDestinations, row.item.dropoffLocation, zoneLimit)) return;
-      const remaining = row.item.quantityScu - row.item.loadedScu;
-      const loadScu = Math.min(remaining, availableScu);
-      if (loadScu <= 0) return;
-      row.item.loadedScu += loadScu;
-      availableScu -= loadScu;
-      onboardDestinations.add(row.item.dropoffLocation);
-      changed = true;
-    }
-  });
-  return changed;
-}
-
-function shouldDeferConstrainedPickup(location, rows, capacityScu, onboardBeforeScu) {
-  if (capacityScu <= 0) return false;
-  const hasUnloadHere = rows.some((row) => row.item.dropoffLocation === location && row.item.loadedScu > row.item.unloadedScu);
-  if (hasUnloadHere) return false;
-  const loadScuHere = getRemainingLoadScu(rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu));
-  if (!loadScuHere) return false;
-  const availableScu = Math.max(0, capacityScu - onboardBeforeScu);
-  const desiredLoadScu = Math.min(loadScuHere, capacityScu);
-  return hasUnloadElsewhere(rows, location) && desiredLoadScu > availableScu;
-}
-
-function shouldDeferSplitDelivery(location, rows, capacityScu, onboardBeforeScu) {
-  const unloadRowsHere = rows.filter((row) => row.item.dropoffLocation === location && row.item.loadedScu > row.item.unloadedScu);
-  if (!unloadRowsHere.length) return false;
-  const loadRowsHere = rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu);
-  if (loadRowsHere.length) return false;
-  const deferredRowsForSameDestination = rows.filter((row) =>
-    row.item.dropoffLocation === location &&
-    row.pickupLocation !== location &&
-    row.item.loadedScu < row.item.quantityScu
-  );
-  if (!deferredRowsForSameDestination.length) return false;
-  if (capacityScu <= 0) return true;
-  const availableScu = Math.max(0, capacityScu - onboardBeforeScu);
-  return getRemainingLoadScu(deferredRowsForSameDestination) <= availableScu;
-}
-
-function chooseNextRouteLocation(rows, current, visited, capacityScu = 0, zoneLimit = 0, getLocationSystem) {
-  const candidates = getRouteCandidateLocations(rows, current);
-  if (!candidates.length) return "";
-
-  const scored = candidates
-    .map((location) => scoreRouteCandidate(rows, current, visited, location, capacityScu, zoneLimit, getLocationSystem))
-    .sort((a, b) => b.score - a.score || a.firstIndex - b.firstIndex);
-
-  return scored[0]?.location ?? "";
-}
-
-function getRouteCandidateLocations(rows, current) {
-  const candidates = new Set();
-  rows.forEach((row) => {
-    if (row.item.loadedScu > row.item.unloadedScu && row.item.dropoffLocation !== current) {
-      candidates.add(row.item.dropoffLocation);
-    }
-    if (row.item.loadedScu < row.item.quantityScu && row.pickupLocation !== current) {
-      candidates.add(row.pickupLocation);
-    }
-  });
-  return [...candidates];
-}
-
-function scoreRouteCandidate(rows, current, visited, location, capacityScu = 0, zoneLimit = 0, getLocationSystem) {
-  const unloadRows = rows.filter((row) => row.item.dropoffLocation === location && row.item.loadedScu > row.item.unloadedScu);
-  const loadRows = rows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu);
-  const unloadScu = unloadRows.reduce((total, row) => total + row.item.loadedScu - row.item.unloadedScu, 0);
-  const onboardBeforeScu = getSimulatedOnboardScu(rows);
-  const onboardAfterUnloadScu = Math.max(0, onboardBeforeScu - unloadScu);
-  const onboardDestinationsAfterUnload = getOnboardDestinationSet(rows, location);
-  const loadPlans = getLoadPlans(loadRows, capacityScu, onboardAfterUnloadScu, onboardDestinationsAfterUnload, zoneLimit);
-  const loadScu = loadPlans.reduce((total, plan) => total + plan.amount, 0);
-  const fullLoadScu = getRemainingLoadScu(loadRows);
-  const unplannedLoadScu = fullLoadScu - loadScu;
-  const desiredLoadScu = capacityScu > 0 ? Math.min(fullLoadScu, capacityScu) : fullLoadScu;
-  const constrainedByCargoOnboard = capacityScu > 0 && loadRows.length && loadScu < desiredLoadScu && hasUnloadElsewhere(rows, location);
-  const constrainedByZones = zoneLimit > 0 && loadRows.length && loadScu < fullLoadScu && getBlockedDestinationCount(loadRows, onboardDestinationsAfterUnload, zoneLimit) > 0;
-  const loadedDestinations = getLoadedDestinationSet(rows);
-  const futureDestinations = unique(loadPlans.map((plan) => plan.row.item.dropoffLocation));
-  const unlocksLoadedDestination = futureDestinations.filter((destination) => loadedDestinations.has(destination)).length;
-  const deferredCargoToSameDestination = getDeferredCargoToDestination(rows, location);
-  const pureUnload = unloadScu > 0 && loadScu === 0;
-  const unloadAndLoad = unloadScu > 0 && loadScu > 0;
-  const pickupOnly = unloadScu === 0 && loadScu > 0;
-  const crossesSystem = getLocationSystem(current) && getLocationSystem(location) && getLocationSystem(current) !== getLocationSystem(location);
-
-  let score = 0;
-  score += unloadScu * 18;
-  score += loadScu * 3;
-  score += pureUnload ? 80 : 0;
-  score += unloadAndLoad ? 55 : 0;
-  score += pickupOnly ? 15 : 0;
-  score += unlocksLoadedDestination * 120;
-  score += futureDestinations.length * 12;
-  score -= deferredCargoToSameDestination * 160;
-  score -= unplannedLoadScu * 25;
-  score -= constrainedByCargoOnboard ? 900 + (desiredLoadScu - loadScu) * 120 : 0;
-  score -= constrainedByZones ? 850 : 0;
-  score -= loadRows.length && loadScu === 0 && !unloadRows.length ? 1000 : 0;
-  score -= crossesSystem ? JUMP_PENALTY : 0;
-  score -= visited.has(location) ? 70 : 0;
-
-  return {
-    location,
-    score,
-    firstIndex: getFirstLocationIndex(rows, location),
-  };
-}
-
-function getLoadPlans(loadRows, capacityScu, onboardAfterUnloadScu, onboardDestinations = new Set(), zoneLimit = 0) {
-  let availableScu = capacityScu > 0 ? Math.max(0, capacityScu - onboardAfterUnloadScu) : Infinity;
-  const plannedDestinations = new Set(onboardDestinations);
-  return loadRows.map((row) => {
-    if (!canLoadDestination(plannedDestinations, row.item.dropoffLocation, zoneLimit)) return { row, amount: 0 };
-    const remaining = row.item.quantityScu - row.item.loadedScu;
-    const amount = Math.min(remaining, availableScu);
-    availableScu -= amount;
-    if (amount > 0) plannedDestinations.add(row.item.dropoffLocation);
-    return { row, amount };
-  }).filter((plan) => plan.amount > 0);
-}
-
-function canLoadDestination(onboardDestinations, destination, zoneLimit = 0) {
-  if (zoneLimit <= 0 || onboardDestinations.has(destination)) return true;
-  return onboardDestinations.size < zoneLimit;
-}
-
-function getOnboardDestinationSet(rows, unloadingLocation = "") {
-  return new Set(
-    rows
-      .filter((row) => row.item.loadedScu > row.item.unloadedScu && row.item.dropoffLocation !== unloadingLocation)
-      .map((row) => row.item.dropoffLocation),
+function hasWorkAtLocation(rows, location) {
+  return rows.some((row) =>
+    (row.item.loadedScu > row.item.unloadedScu && row.item.dropoffLocation === location) ||
+    (row.item.loadedScu < row.item.quantityScu && row.pickupLocation === location)
   );
 }
 
-function getOnboardDestinationsAfterPlans(onboardDestinations, loadPlans) {
-  const destinations = new Set(onboardDestinations);
-  loadPlans.forEach((plan) => {
-    if (plan.amount > 0) destinations.add(plan.row.item.dropoffLocation);
-  });
-  return destinations;
+function getCapacityLeft(rows, capacityScu) {
+  if (capacityScu <= 0) return Infinity;
+  return Math.max(0, capacityScu - getSimulatedOnboardScu(rows));
 }
 
-function getBlockedDestinationCount(loadRows, onboardDestinations, zoneLimit = 0) {
-  if (zoneLimit <= 0) return 0;
-  const destinations = new Set(onboardDestinations);
-  let blocked = 0;
-  loadRows.forEach((row) => {
-    if (destinations.has(row.item.dropoffLocation)) return;
-    if (destinations.size >= zoneLimit) {
-      blocked += 1;
-      return;
-    }
+function getOnboardDestinationDetails(rows) {
+  const destinations = new Set();
+  const zones = new Map();
+  rows.forEach((row) => {
+    if (row.item.loadedScu <= row.item.unloadedScu) return;
     destinations.add(row.item.dropoffLocation);
+    if (row.item.assignedZoneId) {
+      zones.set(row.item.assignedZoneId, row.item.dropoffLocation);
+    }
   });
-  return blocked;
+  return { destinations, zones };
 }
 
-function getZoneLimitedRows(loadRows, onboardDestinations, zoneLimit = 0) {
-  if (zoneLimit <= 0) return [];
-  const destinations = new Set(onboardDestinations);
-  const blockedRows = [];
-  loadRows.forEach((row) => {
-    if (destinations.has(row.item.dropoffLocation)) return;
-    if (destinations.size >= zoneLimit) {
-      blockedRows.push(row);
-      return;
-    }
-    destinations.add(row.item.dropoffLocation);
-  });
-  return blockedRows;
+function hasZoneLimitedLoads(beforeRows, afterRows, location, zoneLimit) {
+  if (zoneLimit <= 0) return false;
+  const loadRows = beforeRows.filter((row) => row.pickupLocation === location && row.item.loadedScu < row.item.quantityScu);
+  if (!loadRows.length) return false;
+  const loadedScu = afterRows.reduce((total, row, index) => {
+    const before = beforeRows[index];
+    return total + Math.max(0, row.item.loadedScu - before.item.loadedScu);
+  }, 0);
+  return loadedScu < getRemainingLoadScu(loadRows) && getOnboardDestinationDetails(afterRows).destinations.size >= zoneLimit;
+}
+
+function hasFutureCargoToDestination(rows, destination) {
+  return rows.some((row) =>
+    row.item.dropoffLocation === destination &&
+    row.item.loadedScu < row.item.quantityScu &&
+    row.pickupLocation !== destination
+  );
+}
+
+function didJump(from, to, getLocationSystem) {
+  const fromSystem = getLocationSystem(from);
+  const toSystem = getLocationSystem(to);
+  return Boolean(fromSystem && toSystem && fromSystem !== toSystem);
+}
+
+function getRouteStopNote(loadRows) {
+  if (!loadRows.length) return "";
+  return `After loading here: ${unique(loadRows.map((row) => row.item.dropoffLocation)).join(", ")}.`;
 }
 
 function getRemainingLoadScu(loadRows) {
   return loadRows.reduce((total, row) => total + row.item.quantityScu - row.item.loadedScu, 0);
 }
 
-function hasUnloadElsewhere(rows, location) {
-  return rows.some((row) => row.item.dropoffLocation !== location && row.item.loadedScu > row.item.unloadedScu);
+function getRemainingWorkScu(rows) {
+  return rows.reduce((total, row) => total + (row.item.quantityScu - row.item.unloadedScu), 0);
 }
 
 function getSimulatedOnboardScu(rows) {
@@ -451,27 +408,6 @@ function getShipCapacityScu(session) {
 
 function getZoneLimit(session) {
   return Math.max(0, session.zones?.length ?? 0);
-}
-
-function getLoadedDestinationSet(rows) {
-  return new Set(
-    rows
-      .filter((row) => row.item.loadedScu > row.item.unloadedScu)
-      .map((row) => row.item.dropoffLocation),
-  );
-}
-
-function getDeferredCargoToDestination(rows, destination) {
-  return rows.reduce((total, row) => {
-    if (
-      row.item.dropoffLocation === destination &&
-      row.item.loadedScu < row.item.quantityScu &&
-      row.pickupLocation !== destination
-    ) {
-      return total + row.item.quantityScu - row.item.loadedScu;
-    }
-    return total;
-  }, 0);
 }
 
 function getFirstLocationIndex(rows, location) {
