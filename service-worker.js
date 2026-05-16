@@ -1,10 +1,10 @@
-const CACHE_NAME = "hauldeck-v36";
+const CACHE_NAME = "hauldeck-v37";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./assets/app.css",
-  "./assets/app.js",
-  "./assets/route-planner.js",
+  "./assets/app.css?v=37",
+  "./assets/app.js?v=37",
+  "./assets/route-planner.js?v=37",
   "./public/manifest.webmanifest",
   "./public/icons/icon.svg",
   "./public/data/locations.json",
@@ -32,7 +32,7 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "reload" })
       .then((response) => {
         if (!response.ok) return response;
         const copy = response.clone();
