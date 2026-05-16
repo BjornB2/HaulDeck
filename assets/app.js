@@ -298,6 +298,7 @@ function renderDashboard(session) {
         <button class="secondary" data-action="toggle-archive" data-session-id="${session.id}">${session.status === "active" ? "Archive run" : "Restore run"}</button>
         <button class="danger-button" data-action="delete-session" data-session-id="${session.id}">Delete run</button>
       </div>
+      <button class="secondary full-width" data-action="refresh-app-cache">Refresh app cache</button>
     </section>
   `;
 }
@@ -682,6 +683,7 @@ function bindEvents() {
     if (action === "rename-zone") element.addEventListener("change", (event) => renameZone(element.dataset.zoneId, event.currentTarget.value));
     if (action === "assign-zone") element.addEventListener("change", (event) => assignZone(element.dataset.contractId, element.dataset.itemId, event.currentTarget.value));
     if (action === "dismiss-cargo-hint") element.addEventListener("click", dismissCargoHint);
+    if (action === "refresh-app-cache") element.addEventListener("click", refreshAppCache);
   });
 
 }
@@ -694,6 +696,22 @@ function dismissCargoHint() {
     // Ignore private browsing/storage failures; the hint can reappear next load.
   }
   render();
+}
+
+async function refreshAppCache() {
+  if (!confirm("Refresh the app cache? Your hauling runs stay saved.")) return;
+  try {
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+  } finally {
+    window.location.replace(`${window.location.pathname}?refresh=${Date.now()}`);
+  }
 }
 
 async function createNewSession() {
