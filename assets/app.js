@@ -892,7 +892,8 @@ function autoAssignZones(session) {
   const usedZones = new Set();
   const contracts = session.contracts.map((contract) => {
     const items = contract.items.map((item) => {
-      if (item.assignedZoneId) {
+      const isActiveCargo = contract.status !== "cancelled" && item.unloadedScu < item.quantityScu;
+      if (isActiveCargo && item.assignedZoneId) {
         destinationToZone.set(item.dropoffLocation, item.assignedZoneId);
         usedZones.add(item.assignedZoneId);
       }
@@ -923,15 +924,6 @@ function getWarnings(session) {
   if (unassigned.length) warnings.push({ level: "warning", message: `${unassigned.length} cargo line${unassigned.length === 1 ? "" : "s"} have unassigned cargo.` });
   const zoneLimitedStops = getRouteChecklist(session, { startLocation: session.startLocation, zoneName, getLocationSystem }).filter((stop) => stop.zoneLimited);
   if (zoneLimitedStops.length) warnings.push({ level: "info", message: `Route adjusted for ${session.zones.length} cargo zones. Add one more cargo zone for further optimized routing for this trip.` });
-  const commodityDestinations = new Map();
-  cargo.forEach(({ item }) => {
-    const set = commodityDestinations.get(item.commodity) ?? new Set();
-    set.add(item.dropoffLocation);
-    commodityDestinations.set(item.commodity, set);
-  });
-  commodityDestinations.forEach((set, commodity) => {
-    if (set.size > 1) warnings.push({ level: "warning", message: `${commodity} appears in multiple destinations. Keep those stacks physically separated.` });
-  });
   getDestinationSummaries(session).forEach((destination) => {
     const zones = destination.zones.filter((zone) => zone !== "Unassigned");
     if (zones.length > 1) {
